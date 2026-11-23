@@ -46,7 +46,9 @@ def main(argv=None) -> None:
     from vader.core import config
     if config.FROZEN:
         import velopack
-        velopack.App().run()   # 설치·업데이트·제거 때 Velopack 이 부른다 — 할 일을 하고 여기서 끝날 수 있다
+        # 설치·업데이트·제거 때 Velopack 이 부른다 — 할 일을 하고 여기서 끝날 수 있다.
+        # 켤 때 캐시를 저절로 적용하지 않는다 — 서명 검증을 거친 것만 껍데기가 건다 (codex1 업데이트 키 리뷰)
+        velopack.App().set_auto_apply_on_startup(False).run()
     argv = sys.argv[1:] if argv is None else argv
     config.REQUIRE_WORKSPACE = True   # 로그인·잠금 해제 전엔 업무 데이터를 못 연다 (2단계)
     if argv[:1] == ['--module'] and argv[1:2] and argv[1] in config.CHILD_MODULES:

@@ -10,7 +10,7 @@
 일꾼 → 껍데기
   {"ui": "eval", "js": "..."} · {"ui": "hide|show|restore|minimize"} · {"ui": "badge_close", "rec": n}
   {"ui": "exit"}                                  닫기가 승인됐다 — 창을 내린다. 일꾼은 뒷정리를 한다
-  {"ui": "done", "safe": bool}                    뒷정리 끝. safe 일 때만 껍데기가 받아 둔 업데이트를 적용한다
+  {"ui": "done", "safe": bool, "update": sha256|null}  뒷정리 끝. safe 이고 캐시 패키지가 그 sha256 일 때만 업데이트를 적용한다
   {"ask": k, "ui": "pick", "folder": bool, "multiple": bool, "types": [...]}  → 경로 목록
   {"ask": k, "ui": "badge_open", "rec": n}        → 녹화 배지를 실제로 띄웠으면 true. 닫히면 call record_end {"rec": n}
   {"ask": k, "ui": "notify", "title": "...", "text": "..."}  → 알림 API 가 받았으면 true
@@ -319,7 +319,8 @@ def main():
         try:
             clean = host.shutdown(api, apply_update=False)
         finally:
-            shell.send(ui='done', safe=approved and clean)
+            from vader.core import update
+            shell.send(ui='done', safe=approved and clean, update=update.verified_sha())
             shell.flush()
 
 

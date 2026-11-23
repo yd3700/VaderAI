@@ -54,6 +54,8 @@ struct Worker {
     waiting: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     exiting: AtomicBool,
     safe: AtomicBool,
+    /// 일꾼이 이번 실행에서 서명 검증을 거쳐 받아 둔 전체 패키지 sha256 — 캐시 파일이 이와 같을 때만 적용한다
+    update: Mutex<Option<String>>,
     /// 일꾼과의 줄이 끊겼다(쓰기 실패·stdout 닫힘) — 새 호출을 받지 않고, 기다리는 호출은 모두 실패로 끝냈다
     dead: AtomicBool,
 }
@@ -138,7 +140,8 @@ async fn call(
 }
 
 fn main() {
-    velopack::VelopackApp::build().run(); // 설치·업데이트·제거 때 Velopack 이 부른다 — 여기서 끝날 수 있다
+    // 설치·업데이트·제거 때 Velopack 이 부른다 — 여기서 끝날 수 있다. 켤 때 캐시를 저절로 적용하지 않는다(서명 검증을 거친 것만)
+    velopack::VelopackApp::build().set_auto_apply_on_startup(false).run();
     if relaunched_as_admin() {
         return;
     }
@@ -273,6 +276,7 @@ fn spawn_worker(app: AppHandle) -> Result<Arc<Worker>, Box<dyn std::error::Error
         waiting: Mutex::new(HashMap::new()),
         exiting: AtomicBool::new(false),
         safe: AtomicBool::new(false),
+        update: Mutex::new(None),
         dead: AtomicBool::new(false),
     });
     let mut stdin: ChildStdin = child.stdin.take().unwrap();
@@ -307,7 +311,9 @@ fn spawn_worker(app: AppHandle) -> Result<Arc<Worker>, Box<dyn std::error::Error
         }
         // 일꾼이 안전하게 끝냈다고(작업·콘솔까지) 알리고 정상 종료했을 때만 받아 둔 업데이트를 건다 (codex1 Rust r2 P2-5)
         if w.safe.load(Ordering::SeqCst) && exited_ok {
-            apply_pending_update();
+            if let Some(sha) = w.update.lock().unwrap().clone() {
+                apply_pending_update(&sha);
+            }
         }
         app.exit(0);
     });
@@ -364,7 +370,10 @@ fn handle(app: &AppHandle, worker: &Arc<Worker>, msg: Value) {
             }
             close_badges(app);
         }
-        ("done", _) => worker.safe.store(msg["safe"].as_bool() == Some(true), Ordering::SeqCst),
+        ("done", _) => {
+            *worker.update.lock().unwrap() = msg["update"].as_str().map(str::to_string);
+            worker.safe.store(msg["safe"].as_bool() == Some(true), Ordering::SeqCst);
+        }
         ("notify", _) => {
             // 알림 API 가 받았는지 돌려준다 — 실패면 일꾼이 '알렸음' 으로 치지 않는다 (codex1 Rust r2 P2-4)
             let shown = notify(&text("title"), &text("text"));
@@ -425,10 +434,11 @@ fn badge(app: &AppHandle, worker: &Arc<Worker>, rec: Value) -> bool {
 }
 
 /// 일꾼이 받아 둔 업데이트(Velopack packages)를 이 프로세스가 끝난 뒤 적용하게 건다. 설치본이 아니면 아무것도 안 한다.
-fn apply_pending_update() {
+/// 캐시에서 고른 패키지의 실제 sha256 이 일꾼이 검증한 값과 다르면 걸지 않는다 — 옛 실행이 남긴 미검증 캐시 (codex1 업데이트 키 리뷰)
+fn apply_pending_update(verified: &str) {
     let source = velopack::sources::FileSource::new(std::env::temp_dir());
     let Ok(manager) = velopack::UpdateManager::new(source, None, None) else { return };
-    if let Some(asset) = manager.get_update_pending_restart() {
+    if let Some(asset) = manager.get_update_pending_restart().filter(|a| !a.SHA256.is_empty() && a.SHA256.eq_ignore_ascii_case(verified)) {
         let _ = manager.wait_exit_then_apply_updates(asset, true, false, Vec::<String>::new());
     }
 }

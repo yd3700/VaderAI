@@ -15,7 +15,7 @@ from vader.core import config
 
 #: 업데이트 피드 서명 공개키(Ed25519 base64, `tools/update_sign.py`). 하나라도 있으면 피드의 releases.win.json 이
 #: 이 키로 서명돼 있고, 받을 패키지가 그 목록의 sha256 과 같을 때만 받는다 — 피드·저장소가 함께 털려도 막는다 (codex1 2026-11-20).
-UPDATE_KEYS: tuple[str, ...] = ()
+UPDATE_KEYS: tuple[str, ...] = ("e3+sWaPhJPraSN5F/U5iVWPnySs+BJEOUAj+NUkV4xw=",)   # 마스터 2026-11-23
 MANIFEST = "releases.win.json"
 
 _pending: tuple | None = None   # (UpdateManager, UpdateInfo) — 받아 두고 적용을 기다리는 것
@@ -116,8 +116,18 @@ def check_signed(info, manifest: bytes, signature: bytes, keys: tuple[str, ...] 
             raise UpdateRefused(f"서명된 목록에 없는 업데이트 파일입니다: {asset.FileName}")
 
 
+def verified_sha() -> str | None:
+    """이번 실행에서 서명 검증을 거쳐 받아 둔 전체 패키지의 sha256 — 껍데기는 캐시 파일이 이 값과 같을 때만 적용한다."""
+    if _pending and UPDATE_KEYS:
+        return str(_pending[1].TargetFullRelease.SHA256).lower()
+    return None
+
+
 def apply_on_exit() -> None:
     """창이 닫힌 뒤 부른다. 이 프로세스가 끝나면 Velopack 이 교체한다 (다시 켜지 않는다)."""
-    if _pending:
-        manager, info = _pending
-        manager.wait_exit_then_apply_updates(info, silent=True, restart=False)
+    verified = verified_sha()
+    if verified:   # 껍데기와 같은 규칙 — 캐시 파일의 실제 sha256(Velopack 이 파일에서 계산)이 검증값과 같을 때만 (codex1 업데이트 키 리뷰 2차)
+        manager = _pending[0]
+        asset = manager.get_update_pending_restart()
+        if asset and str(asset.SHA256).lower() == verified:
+            manager.wait_exit_then_apply_updates(asset, silent=True, restart=False)
