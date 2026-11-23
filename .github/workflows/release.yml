@@ -41,7 +41,7 @@ jobs:
           dotnet tool install -g vpk --version 1.2.161
           python -m venv .venv-desktop
           .venv-desktop\Scripts\python -m pip install --upgrade pip
-          .venv-desktop\Scripts\python -m pip install ".[desktop,eonm,supply,gemini,claude,workshop]" pyinstaller==6.22.3 velopack==1.2.161
+          .venv-desktop\Scripts\python -m pip install ".[desktop,eonm,supply,gemini,claude,workshop]" typer==0.21.2 pyinstaller==6.22.3 velopack==1.2.161   # typer: PyInstaller 가 mcp.cli 를 모을 때 필요
       - name: Update feed = this repo's GitHub Releases
         shell: pwsh
         run: '"https://github.com/${{ github.repository }}/releases/latest/download" | Out-File packaging\update_feed.txt -Encoding ascii -NoNewline'
