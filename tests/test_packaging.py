@@ -1,5 +1,6 @@
 """배포 메타데이터와 CI의 최소 계약."""
 from __future__ import annotations
+from tests.private import needs
 
 import tomllib
 from pathlib import Path
@@ -54,6 +55,7 @@ def test_sdist_manifest_excludes_repo_only_directories():
         assert f"prune {directory}" in manifest
 
 
+@needs(".github/workflows/ci.yml")   # 비공개 CI — 공개 저장소는 public/.github 의 build 를 쓴다
 def test_ci_runs_core_and_full_windows_matrices():
     workflow = (
         ROOT / ".github" / "workflows" / "ci.yml"
