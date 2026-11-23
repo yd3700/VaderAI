@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import shutil
 from pathlib import Path
@@ -102,7 +103,7 @@ def check(folder: Path) -> list[str]:
             try:
                 # **이미 정리된 그대로** 여야 한다 — 원본 녹화를 나중에 넣으면 여기서 걸린다 (codex1 P1-2).
                 # 포장 때 몰래 다시 정리하지 않는다: 시험한 지문이 깨진다.
-                if json.loads(path.read_text(encoding="utf-8")) != _clean(path):
+                if path.read_bytes() != _dump(_clean(path)):
                     problems.append(f"{name}: 정리하지 않은 녹화 (배포 사본을 다시 만들거나 녹화 가져오기로 넣으세요)")
             except (ReleaseError, ValueError) as exc:
                 problems.append(f"{name}: {exc}")
@@ -112,8 +113,53 @@ def check(folder: Path) -> list[str]:
 def write_clean_recording(source: Path, target: Path) -> dict:
     """정리한 녹화를 쓴다. 정리본을 돌려준다."""
     cleaned = _clean(source)
-    Path(target).write_text(json.dumps(cleaned, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(target).write_bytes(_dump(cleaned))
     return cleaned
+
+
+def _dump(cleaned: dict) -> bytes:
+    """정리본의 **바이트** — 서버(`catalog-archive.ts`)의 `JSON.stringify(data, null, 2)` 와 같게 직접 쓴다.
+    줄바꿈 LF, 숫자는 JS 표기(1.0→1, 1e-05→0.00001), 비유한 값·참거짓은 거절 (2026-11-23 eonm_ipgo 첫 제출 거절, codex1 4차)."""
+    def value(v):
+        if isinstance(v, str):
+            return json.dumps(v, ensure_ascii=False)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ReleaseError(f"녹화 좌표가 숫자가 아닙니다: {v!r}")
+        # 정수는 JS 안전 범위 안만 — 밖이면 서버가 다른 수로 읽는다(2**53+1). 큰 정수는 isfinite 에서 넘치기도 한다 (codex1 5차)
+        # 실수도 같은 범위 — 2**53 넘는 실수는 모두 정수값이라 `1e16` 이 정수로 쓰였다가 다시 읽을 때 걸린다 (codex1 6차)
+        if isinstance(v, float) and not math.isfinite(v) or abs(v) > 2**53 - 1:
+            raise ReleaseError(f"녹화 좌표가 다룰 수 없는 수입니다: {str(v)[:20]}")
+        return _js_number(v)
+
+    nl = "\n"
+
+    def step(item: dict) -> str:
+        if not item:
+            return "{}"
+        rows = ("," + nl).join(f"      {json.dumps(k, ensure_ascii=False)}: {value(v)}" for k, v in item.items())
+        return "{" + nl + rows + nl + "    }"
+
+    steps = "[]" if not cleaned["steps"] else (
+        "[" + nl + ("," + nl).join(f"    {step(x)}" for x in cleaned["steps"]) + nl + "  ]")
+    text = "{" + nl + '  "format": ' + value(cleaned["format"]) + "," + nl + '  "steps": ' + steps + nl + "}"
+    return text.encode("utf-8")
+
+
+def _js_number(v: int | float) -> str:
+    """JS `Number.prototype.toString` — 가장 짧은 자릿수(파이썬 repr 과 같다)를, 10의 지수가 -7~20 이면 소수로, 밖이면 1e-7·1.5e+21 로."""
+    from decimal import Decimal
+
+    d = Decimal(repr(float(v)) if isinstance(v, float) else str(v))
+    if d == 0:
+        return "0"
+    exp = d.adjusted()
+    if -7 < exp < 21:
+        text = format(d, "f")
+        return text.rstrip("0").rstrip(".") if "." in text else text
+    sign, digits, _ = d.as_tuple()
+    mantissa = str(digits[0]) + ("." + "".join(map(str, digits[1:])).rstrip("0") if len(digits) > 1 else "")
+    mantissa = mantissa.rstrip(".")
+    return ("-" if sign else "") + f"{mantissa}e{'+' if exp > 0 else '-'}{abs(exp)}"
 
 
 def _is_recording(rel: Path) -> bool:

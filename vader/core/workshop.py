@@ -40,6 +40,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -403,8 +404,10 @@ def _compare(expected_dir: Path, artifacts: list[Path]) -> list[dict]:
 def _diff(want: Path, got: Path) -> dict:
     if want.suffix.lower() in {".xlsx", ".csv"}:
         a, b = _rows(want), _rows(got)
-        missing = [r for r in a if r not in b]
-        extra = [r for r in b if r not in a]
+        # 행의 존재만이 아니라 횟수까지 — 같은 행이 두 번 들어가거나 빠져도 잡는다 (codex1 eonm 시험 길)
+        want_n, got_n = Counter(map(tuple, a)), Counter(map(tuple, b))
+        missing = [list(r) for r in (want_n - got_n).elements()]
+        extra = [list(r) for r in (got_n - want_n).elements()]
         return {"same": not missing and not extra, "rows": [len(a), len(b)],
                 "missing": missing[:DIFF_LIMIT], "extra": extra[:DIFF_LIMIT],
                 "detail": f"정답 {len(a)}행 · 결과 {len(b)}행 · 빠짐 {len(missing)} · 더함 {len(extra)}"}
@@ -510,6 +513,8 @@ class _CaseContext:
         self.datadir.mkdir()
         self.params = params
         self.dry_run = True
+        #: 제작소 시험 표시 — 화면을 쓰는 룬은 이것을 보고 실제 창 대신 화면 없는 대역을 쓴다 (codex1 eonm 시험 길)
+        self.screenless = True
         self.logs: list[dict] = []
         self.unverified: list[str] = []
         self._answers = list(answers)

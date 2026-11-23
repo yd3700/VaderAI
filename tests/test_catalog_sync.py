@@ -73,6 +73,7 @@ def test_install_downloads_the_signed_bytes_and_refuses_anything_else(monkeypatc
     web = Web({}, release, data)
     wire(monkeypatch, web)
     done = catalog_sync.install("reader", "0.1.0")
+    assert web.calls[0] == "/api/catalog/releases/reader/0.1.0"     # 끝 슬래시 없이 — 있으면 서버가 308 로 돌려보낸다
     assert done.manifest.id == "reader" and catalog.origins()["reader"]["state"] == "installed"
     assert catalog_sync.listing()["releases"][0]["state"] == "installed"
 

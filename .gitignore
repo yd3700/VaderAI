@@ -16,6 +16,7 @@ dist/
 # `git add -A` 한 번에 올라간다. 테스트용 마스터 CSV 와 스캔 폴더가 여기 해당한다.
 vaderai-test/
 master.csv
+!tests/release_cases/eonm_ipgo/*/input/master.csv
 product_db.csv
 scans/
 
@@ -32,7 +33,7 @@ rune-packages/*/recordings/
 !rune-packages/eonm_ipgo/recordings/
 
 # 설치본 빌드 산출물 (packaging/build.ps1)
-releases/
+/releases/
 # 업데이트 피드 주소 — 공용 업데이트 키가 들어 있다. 이 리포는 공개다
 packaging/update_feed.txt
 

@@ -232,3 +232,46 @@ def test_a_linked_file_is_not_copied(tmp_path):
         pytest.skip("이 PC 는 링크를 만들 권한이 없다")
     with pytest.raises(release.ReleaseError, match="링크"):
         release.make(source, tmp_path / "copy")
+
+
+def test_a_cleaned_recording_is_written_in_the_servers_byte_form(tmp_path):
+    """서버는 JSON.stringify(data, null, 2) 와 바이트가 같아야 받는다 (2026-11-23 eonm_ipgo 첫 제출 거절, codex1 4차).
+    정답 바이트는 node 의 JSON.stringify 로 확정한 것 — LF, 1.0→1, 0.00001 은 소수, 1e-7 은 지수."""
+    source, target = tmp_path / "raw.json", tmp_path / "clean.json"
+    step = {"at": "", "keys": "{UP 2}", "rel_x": 1.0, "rel_y": 0.00001, "ctrl_x": 1e-7, "ctrl_y": 0.25}
+    source.write_text(json.dumps({"format": "vader-recording/1", "steps": [step]}), encoding="utf-8")
+    release.write_clean_recording(source, target)
+    assert target.read_bytes() == (
+        b'{\n  "format": "vader-recording/1",\n  "steps": [\n    {\n      "at": "",\n      "keys": "{UP 2}",\n'
+        b'      "rel_x": 1,\n      "rel_y": 0.00001,\n      "ctrl_x": 1e-7,\n      "ctrl_y": 0.25,\n'
+        b'      "window_title": ""\n    }\n  ]\n}')
+
+
+def test_a_recording_with_a_non_finite_number_stops_the_copy(tmp_path):
+    """NaN 은 이 PC 검사를 지나도 서버가 못 읽는다 — 사본을 만들 때 멈춘다 (codex1 4차)."""
+    source = tmp_path / "raw.json"
+    source.write_text('{"format": "vader-recording/1", "steps": [{"at": "", "keys": "", "rel_x": NaN}]}', encoding="utf-8")
+    with pytest.raises(release.ReleaseError):
+        release.write_clean_recording(source, tmp_path / "clean.json")
+
+
+@pytest.mark.parametrize("raw", ["9007199254740993", "1" + "0" * 309, "1e16", "9007199254740992.0"])
+def test_a_recording_with_an_integer_outside_js_safe_range_stops_the_copy(tmp_path, raw):
+    """서버(JS)가 다른 수로 읽거나 넘치는 정수 — 2**53+1, 10**309 (codex1 5차)."""
+    source = tmp_path / "raw.json"
+    source.write_text('{"format": "vader-recording/1", "steps": [{"at": "", "keys": "", "ctrl_x": ' + raw + '}]}',
+                      encoding="utf-8")
+    with pytest.raises(release.ReleaseError):
+        release.write_clean_recording(source, tmp_path / "clean.json")
+
+
+@pytest.mark.parametrize("raw", ["9007199254740991", "-9007199254740991", "9007199254740991.0", "0.00001", "1e-7", "1.5"])
+def test_an_accepted_recording_passes_the_check_right_after_writing(tmp_path, raw):
+    """쓰기가 받은 녹화는 다시 읽는 검사도 통과한다 — 쓰기와 검사의 범위가 갈리지 않는다 (codex1 6차)."""
+    folder = tmp_path / "rune"
+    (folder / "recordings").mkdir(parents=True)
+    source = tmp_path / "raw.json"
+    source.write_text('{"format": "vader-recording/1", "steps": [{"at": "", "keys": "", "ctrl_x": ' + raw + '}]}',
+                      encoding="utf-8")
+    release.write_clean_recording(source, folder / "recordings" / "nav.json")
+    assert release.check(folder) == []

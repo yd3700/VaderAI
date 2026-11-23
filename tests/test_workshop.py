@@ -155,3 +155,13 @@ def test_projects_show_where_each_rune_is_in_the_workshop():
     assert state()["packed"]
     make(factor=3)
     assert state() == {"test": "stale", "packed": False, "waiting": False}
+
+
+def test_table_compare_counts_repeated_rows(tmp_path):
+    """같은 행이 한 번 더 들어가거나 빠져도 '같음' 이 아니다 (codex1 eonm 시험 길)."""
+    want, got = tmp_path / "want.csv", tmp_path / "got.csv"
+    want.write_text("a,b\n1,2\n", encoding="utf-8")
+    got.write_text("a,b\n1,2\n1,2\n", encoding="utf-8")
+    result = workshop._diff(want, got)
+    assert not result["same"] and result["extra"] == [["1", "2"]]
+    assert workshop._diff(got, want)["missing"] == [["1", "2"]]

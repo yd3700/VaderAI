@@ -158,7 +158,8 @@ def install(rune_id: str, version: str, rune_dir: Path | None = None):
         raise SyncError("이 설치본에는 광장 받기가 켜져 있지 않습니다.")
     quoted = "/".join(urllib.parse.quote(part, safe="") for part in (rune_id, version))
     try:
-        found = account.call("GET", f"/api/catalog/releases/{quoted}/")
+        # 끝 슬래시 없이 — 마지막 조각이 `1.1.0` 이라 Next(trailingSlash) 가 308 로 떼는데, 로그인 머리를 지키려고 리디렉션은 안 따른다 (codex1 2026-11-23)
+        found = account.call("GET", f"/api/catalog/releases/{quoted}")
     except account.AccountError as exc:
         raise SyncError(str(exc)) from None
     document = str(found.get("document", "")).encode("utf-8")
