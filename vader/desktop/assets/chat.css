@@ -1,0 +1,49 @@
+/* 대화 서랍 — 넓은 창은 오른쪽에 붙고(main 이 줄어든다), 좁은 창은 위에 겹친다. */
+body.chat-open{grid-template-columns:72px minmax(0,1fr) 380px}
+.chat{grid-column:3;grid-row:2;min-height:0;display:flex;flex-direction:column;background:var(--surface);border-left:1px solid var(--line)}
+.chat[hidden]{display:none}
+@media(max-width:1179px){
+ body.chat-open{grid-template-columns:72px minmax(0,1fr)}
+ .chat{position:fixed;z-index:15;top:56px;right:0;bottom:30px;width:min(380px,100vw);border-left-color:var(--line-strong);box-shadow:-16px 0 36px #000000b3}
+}
+@media(max-width:900px){body.chat-open{grid-template-columns:minmax(0,1fr)}.chat{bottom:86px}}
+
+#chatToggle[aria-expanded=true]{color:var(--text)}
+.chat-head{display:flex;align-items:center;gap:12px;padding:12px 12px 12px 16px;border-bottom:1px solid var(--line)}
+.chat-avatar{width:36px;height:36px;flex-shrink:0;display:grid;place-items:center;border-radius:50%;background:var(--bg);border:1px solid #f02b3a73;color:var(--red);box-shadow:0 0 12px #f02b3a59}
+.chat-avatar svg{width:18px;height:18px}
+.chat.thinking .chat-avatar{border-color:#4da8da80;color:var(--blue);box-shadow:0 0 12px #4da8da4d}
+.chat-who{flex:1;min-width:0}.chat-who h2{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.chat-who p{margin-top:2px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-who p.bad{color:#ffab9f}
+.chat-head .text-button{flex-shrink:0;padding:6px 4px}.chat-head .icon-button{flex-shrink:0;border-color:transparent}.chat-head .icon-button:hover{border-color:var(--line-strong)}
+.chat-head .icon-button svg{width:18px;height:18px}
+
+.chat-stream{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:16px;display:flex;flex-direction:column;gap:12px}
+.chat-stream:focus-visible{outline-offset:-2px}
+.msg{display:flex;max-width:88%}
+.msg-body{padding:10px 14px;font-size:14px;line-height:22px;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--line);border-radius:12px}
+.msg-body b{font-weight:650;color:var(--text)}
+.msg.ai{align-self:flex-start}
+.msg.ai .msg-body{background:var(--bg);color:#d6dce4;border-left:2px solid #74dfbb99;border-top-left-radius:4px}
+.msg.me{align-self:flex-end}
+.msg.me .msg-body{background:var(--surface-2);color:var(--text);border-bottom-right-radius:4px;box-shadow:var(--lift)}
+.msg.pending .msg-body{color:var(--muted);border-left-color:var(--blue)}
+.chat-divider{align-self:center;font-size:11px;color:var(--muted);padding:2px 10px;border:1px solid var(--line);border-radius:999px}
+.chat-error{align-self:stretch;font-size:13px;line-height:1.5;color:#ffab9f;padding:8px 12px;border:1px solid #ff4d5e4d;background:#ff4d5e1a;border-radius:10px;overflow-wrap:anywhere}
+.chat-intro{margin:auto 0 0;display:grid;gap:8px}
+.chat-intro p{font-size:13px;line-height:1.6;color:var(--muted);margin-bottom:4px}
+.chat-ask{text-align:left;font-size:13px;padding:10px 12px;color:var(--text);background:var(--surface-2);border:1px solid var(--line);border-radius:10px;transition:border-color .15s}
+.chat-ask:hover{border-color:var(--red)}
+
+.chat-compose{padding:12px 16px 14px;border-top:1px solid var(--line);display:grid;gap:8px}
+.chat-gate{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;color:#ffcf9c;padding:8px 10px;border:1px solid #ffb35d4d;background:#ffb35d12;border-radius:10px}
+.chat-gate .button{padding:7px 11px;font-size:12px}.chat-gate svg{width:16px;height:16px}
+.chat-box{display:flex;align-items:flex-end;gap:8px;padding:6px;background:var(--surface-2);border:1px solid var(--line);border-radius:12px;transition:border-color .15s,box-shadow .15s}
+.chat-box:focus-within{border-color:var(--red);box-shadow:0 0 0 1px var(--red)}
+.chat-box textarea{flex:1;min-height:44px;max-height:160px;resize:none;border:0;background:none;padding:6px 8px;line-height:22px;color:var(--text);font-size:14px}
+.chat-box textarea:focus-visible{box-shadow:none;outline:0}
+.chat-box textarea::placeholder{color:var(--muted)}
+.chat-box textarea:disabled{opacity:.5}
+.chat-box .button{padding:9px 13px;font-size:13px;gap:7px}.chat-box .button svg{width:16px;height:16px}
+.chat-note{font-size:11px;line-height:1.5;color:var(--muted)}
+@media(prefers-reduced-motion:reduce){.chat-ask,.chat-box{transition:none}}

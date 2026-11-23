@@ -1,0 +1,25 @@
+{
+  "_comment": "설치본은 처음 켤 때 이 파일을 복사한다. AI 키는 앱의 'AI 연결' 화면에서 넣는다 (Windows 보호 저장).",
+  "_usage": "cp settings.template.json settings.json",
+  "_structure": "코어 설정(api / place / processing)과 룬 설정(runes.{rune_id})을 분리합니다. 새 룬을 붙일 때 코어는 건드리지 않습니다.",
+  "api": {
+    "ocr_provider": "gemini",
+    "request_delay_seconds": 5,
+    "providers": {}
+  },
+  "place": {
+    "name": "",
+    "id": "",
+    "setup_complete": false,
+    "city": "서울"
+  },
+  "processing": {
+    "data_dir": null,
+    "rune_dir": null,
+    "cache_days": 30,
+    "api_retry_max": 3
+  },
+  "runes": {
+    "_comment": "키는 rune_id와 같아야 합니다. 이 블록은 그대로 해당 룬의 ctx.params가 됩니다. 코어는 내용을 해석하지 않습니다."
+  }
+}

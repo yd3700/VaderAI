@@ -1,0 +1,20 @@
+{
+  "account": "1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b",
+  "peer": "6ec0bd7f-11c0-43da-975e-2a8ad9ebae0b",
+  "session": "9f2c1a4e-3b5d-4c6e-8f70-1a2b3c4d5e6f",
+  "device": "c3d4e5f6-a7b8-4c9d-8e0f-112233445566",
+  "curve": "SK1B+2DkwJKgfqMNu2PgxW6b2n4fffPYEvXeM/oZnRg",
+  "ed": "KtpYoGGnIfpJ6MMlfoo1CF2bm5ZWb6PKIutEVmJ7SCQ",
+  "peer_ed": "z7ta1zI3/C/Zs3TGz8OHjMLL1jbr3P10LeNYM2lG7eg",
+  "key_id": "AAAAAAAAAAA",
+  "key": "kff5NAuRuoNiUIRCZTlEaAKtkxPodjZgAU+O+CEXZDQ",
+  "bind": "vader-messenger-bind-v2|1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b|9f2c1a4e-3b5d-4c6e-8f70-1a2b3c4d5e6f|c3d4e5f6-a7b8-4c9d-8e0f-112233445566|SK1B+2DkwJKgfqMNu2PgxW6b2n4fffPYEvXeM/oZnRg",
+  "device_text": "vader-messenger-device-v1|1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b|c3d4e5f6-a7b8-4c9d-8e0f-112233445566|SK1B+2DkwJKgfqMNu2PgxW6b2n4fffPYEvXeM/oZnRg",
+  "key_text": "vader-messenger-otk-v1|c3d4e5f6-a7b8-4c9d-8e0f-112233445566|AAAAAAAAAAA|kff5NAuRuoNiUIRCZTlEaAKtkxPodjZgAU+O+CEXZDQ",
+  "fallback_text": "vader-messenger-fallback-v2|c3d4e5f6-a7b8-4c9d-8e0f-112233445566|1|kff5NAuRuoNiUIRCZTlEaAKtkxPodjZgAU+O+CEXZDQ",
+  "bind_sig": "U7TMWyran+pU0uFN/O3B20WbUwFGVEeWxKAMbgnJXhBxthCL1zCCThBv4tIpTngd2+XZpIhvEe4o99q6BQ3+AQ",
+  "device_sig": "AdA2XlgXoZDVHLssRh3Xn1foFe1VdCtDs7VbSyjwvbJbMqhTqOZt+P1SfCaKpAst9cq/3tbvFjvHob6gW6mYCw",
+  "key_sig": "qj6haSAOgvisykHDN1IetZo37igH3EX7g6ZuKLTgF7paozPMwVW+zDJnXkzt0xN3WFHYDHwRQ4/vt9EQ+PBvCA",
+  "fallback_sig": "/0c+RxJ45Vo+EdOrUvJjXNK5diy3eNVmy2Ow4/gXBUQerxWaihTScNdlz2BesQYN+SJr7PPHXRM8VUXJCqvzDw",
+  "safety": "78027 49069 57103 64170 99702 93238 80843 35372 72478 05032 37996 05043"
+}

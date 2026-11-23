@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VaderAI</title><link rel="stylesheet" href="app.css"><link rel="stylesheet" href="gate.css"></head>
+<body>
+<main class="gate" aria-labelledby="gateTitle">
+ <div class="gate-brand"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="m16 3 12 7-12 7L4 10Z M4 16l12 7 12-7 M4 22l12 7 12-7"/></svg>VADER<span>AI</span></div>
+ <h1 id="gateTitle" tabindex="-1">확인하는 중…</h1>
+ <p id="gateLead" class="gate-lead"></p>
+ <form id="gateForm" class="gate-form" hidden autocomplete="off">
+  <label class="gate-field"><span>PIN</span><input id="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" spellcheck="false"></label>
+  <label class="gate-field" id="againField" hidden><span>PIN 한 번 더</span><input id="again" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" spellcheck="false"></label>
+  <button id="gateSubmit" class="button primary" type="submit">열기</button>
+ </form>
+ <button id="gateAction" class="button primary" type="button" hidden></button>
+ <p id="gateError" class="gate-error" role="alert"></p>
+ <button id="gateForgot" class="gate-link" type="button" hidden>PIN 을 잊었어요</button>
+ <p id="gateNote" class="gate-note" hidden>잠금은 화면 보호예요. 같은 Windows 계정을 쓰는 사람이 파일을 직접 여는 것까지는 막지 못해요.</p>
+</main>
+<script src="gate.js"></script>
+</body>
+</html>

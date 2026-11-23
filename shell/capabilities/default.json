@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "앱 안 화면(assets)만 — 원격 주소에는 IPC 를 열지 않는다",
+  "windows": [
+    "main",
+    "badge-*"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}

@@ -1,0 +1,50 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.venv-desktop/
+.codex-test-tmp/
+venv/
+settings.json
+.gstack/
+*.log
+build/
+dist/
+*.egg-info/
+
+# 실제 업무 데이터. 이 리포는 공개다 — 품목·매입처·환자 정보가 섞인 파일이
+# `git add -A` 한 번에 올라간다. 테스트용 마스터 CSV 와 스캔 폴더가 여기 해당한다.
+vaderai-test/
+master.csv
+product_db.csv
+scans/
+
+# supply_order MVP 산출물 — 실제 청구 데이터·환자 수가 들어간다
+rune-packages/supply_order/output/
+rune-packages/supply_order/history.db
+rune-packages/supply_order/history_*.db
+rune-packages/supply_order/config.json
+settings.json.bak
+
+# 룬 안의 녹화 — 창 제목·메뉴 이름(사람 이름·기관명)이 들어 있다. 이 PC 에만 둔다
+rune-packages/*/recordings/
+# 예외: 이온엠 녹화는 룬과 함께 간다 (2026-10-22 마스터 결정). 창 제목은 재생에 쓰는 조각만 남겼다 — 사람 이름 없음
+!rune-packages/eonm_ipgo/recordings/
+
+# 설치본 빌드 산출물 (packaging/build.ps1)
+releases/
+# 업데이트 피드 주소 — 공용 업데이트 키가 들어 있다. 이 리포는 공개다
+packaging/update_feed.txt
+
+# Website local dependencies and private configuration
+web/node_modules/
+web/.next/
+web/.env*
+
+# Rust 껍데기 빌드 산출물
+shell/target/
+shell/gen/
+
+# 화면 자동화 엔진 빌드 산출물 (packaging/agent_desktop.ps1)
+tools/agent-desktop/
+vader/core/screen_pin.py

@@ -1,0 +1,101 @@
+/* Task runes: one complete workflow per sigil. */
+.nexus-scene{max-width:1050px;margin:auto;text-align:center}
+.nexus-title h1{font-size:25px;letter-spacing:.06em;font-weight:500}
+.nexus-title p{font-size:13px;color:var(--muted);margin-top:9px}
+.nexus{width:min(470px,100%);height:440px;margin:-8px auto 0;position:relative;cursor:pointer;border-radius:50%;isolation:isolate;transition:filter .3s}
+.nexus-agent{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.nexus-agent .agent{width:470px;height:470px}
+.nexus-field{position:absolute;inset:14%;border-radius:50%;background:radial-gradient(circle,#f02b3a09,transparent 68%);transition:background .25s,box-shadow .25s}
+.nexus:hover .nexus-field,.nexus.dragging .nexus-field{background:radial-gradient(circle,#f02b3a25,transparent 70%);box-shadow:0 0 85px #f02b3a18}
+.nexus.dragging{filter:brightness(1.7)}
+.nexus.dragging .agent-mark{transform:scale(1.18)}
+.nexus-hint{position:absolute;bottom:10px;left:0;right:0;display:flex;align-items:center;justify-content:center;gap:7px;color:var(--muted);font-size:11px;opacity:.65;transition:opacity .2s}
+.nexus-hint svg{width:14px;height:14px}
+.nexus:hover .nexus-hint{opacity:1;color:white}
+.rune-sigil{display:block;position:relative;width:62px;height:62px;isolation:isolate;transition:transform .35s var(--ease),filter .35s;flex-shrink:0;color:var(--rune)}
+.rune-sigil>svg{width:100%;height:100%;overflow:visible;position:relative;z-index:2;stroke-linejoin:bevel;stroke-linecap:square}
+.sigil-frame{stroke:var(--rune);stroke-width:.8;fill:#0d111a}
+.sigil-inner{stroke:var(--rune);stroke-width:.45;opacity:.5;fill:rgba(var(--rune-rgb),.1)}
+.sigil-stroke{stroke:var(--rune);stroke-width:2.5;filter:drop-shadow(0 0 3px rgba(var(--rune-rgb),.7))}
+.sigil-ring{position:absolute;inset:-7px;border:1px solid rgba(var(--rune-rgb),.22);border-radius:50%;border-top-color:var(--rune);border-bottom-color:var(--rune);animation:rune-spin 18s linear infinite}
+.sigil-spark{position:absolute;inset:-15px;background:radial-gradient(ellipse,rgba(var(--rune-rgb),.17),transparent 65%);animation:rune-breath 3s ease-in-out infinite;z-index:0}
+.tree-rune:hover .rune-sigil{transform:translateY(-3px) scale(1.08);filter:brightness(1.4)}
+.text-button{display:flex;align-items:center;gap:7px;border:0;background:none;color:var(--muted);font-size:12px;padding:8px}
+.text-button:hover{color:white}
+.text-button svg{width:15px;height:15px}
+.grimoire{position:relative;display:grid;grid-template-columns:36% 64%;min-height:650px;isolation:isolate;max-width:1350px;margin:auto}
+.rune-atmosphere{position:absolute;z-index:-1;inset:-35px -4vw -32px;background:radial-gradient(ellipse at 72% 30%,rgba(var(--rune-rgb),.12),transparent 52%),linear-gradient(150deg,transparent 30%,#17233326 60%,transparent);pointer-events:none;transition:background .5s}
+.rune-left{padding:22px 25px 30px 0;display:flex;flex-direction:column}
+.rune-left h1{font-size:29px}
+.rune-intro{margin-top:13px;font-size:13px;color:var(--muted)}
+.rune-tree{position:relative;margin:50px 0 40px;display:flex;flex-direction:column;gap:32px}
+.rune-tree:before{content:"";position:absolute;left:38px;top:40px;bottom:40px;width:1px;background:linear-gradient(var(--red),#8c91ff);opacity:.45}
+.tree-rune{display:flex;align-items:center;gap:24px;position:relative;background:none;border:0;padding:14px 0;text-align:left;color:var(--muted);min-height:105px}
+.tree-rune .rune-sigil{width:76px;height:76px}
+.tree-copy{display:flex;flex-direction:column;gap:12px}
+.tree-copy strong{font-size:18px;font-weight:500}
+.tree-copy small{font-size:12px;line-height:1.5}
+.tree-rune:not(.selected) .rune-sigil{opacity:.6;filter:saturate(.4)}
+.tree-rune.selected .tree-copy strong{color:var(--rune)}
+.tree-rune.selected .tree-copy small{color:#d0d7e0}
+.tree-check{width:30px;height:30px;flex-shrink:0;margin-right:16px;display:grid;place-items:center;padding:0;background:none;border:1px solid rgba(var(--rune-rgb),.55);border-radius:5px;color:var(--rune);transition:border-color .2s,background .2s,transform .2s var(--ease)}
+.tree-check:hover{border-color:var(--rune);background:rgba(var(--rune-rgb),.1)}
+.tree-check:active{transform:scale(.9)}
+.tree-check[aria-checked=false]{border-color:#4a5462}
+.tree-check svg{width:17px;height:17px}
+.rune-count{margin-top:auto;color:var(--muted);font-size:11px;display:flex;align-items:center;gap:16px}
+.rune-count b{font-size:17px;font-weight:400;color:white}
+.rune-showcase{position:relative;display:flex;flex-direction:column;align-items:center;padding:0 28px;border-left:1px solid #ffffff09}
+.rune-relic{position:relative;width:360px;height:355px;isolation:isolate;margin:-10px 0 18px}
+.relic-aura{position:absolute;inset:0 -20%;background:radial-gradient(ellipse,rgba(var(--rune-rgb),.2),transparent 62%);animation:rune-breath 4s ease-in-out infinite}
+.relic-stone{position:absolute;clip-path:polygon(50% 0,82% 17%,96% 45%,83% 88%,50% 100%,15% 88%,4% 45%,17% 17%);background:linear-gradient(115deg,#465362,#1b222c 34%,#303c49 35%,#121922 60%,#3b4652 61%,#161e27 84%);border:1px solid #8991a1}
+.stone-back{inset:18px 81px 21px;transform:rotate(9deg);opacity:.65}
+.stone-front{inset:31px 96px 12px;box-shadow:inset 0 0 40px #000}
+.stone-front:after{content:"";position:absolute;inset:17px;clip-path:inherit;background:linear-gradient(130deg,#506176,#101721 37%,#232f3d 66%,#546074)}
+.rune-relic .large{width:135px;height:135px;position:absolute;left:112px;top:107px;filter:drop-shadow(0 0 22px rgba(var(--rune-rgb),.45));animation:relic-hover 5s ease-in-out infinite}
+.rune-relic .large .sigil-ring{inset:-15px;border-style:dashed;border-top-style:solid;border-bottom-style:solid}
+.relic-orbit{position:absolute;left:36px;top:105px;width:290px;height:125px;border:1px solid rgba(var(--rune-rgb),.22);border-radius:50%;transform:rotate(-25deg)}
+.orbit-two{transform:rotate(60deg);border-style:dashed}
+.relic-floor{position:absolute;bottom:0;left:40px;right:40px;height:20px;background:radial-gradient(ellipse,rgba(var(--rune-rgb),.2),transparent 65%);filter:blur(6px)}
+.ember{position:absolute;width:3px;height:3px;background:var(--rune);border-radius:50%;animation:ember-rise 5s ease-in infinite}
+.e1{left:75px;bottom:70px}.e2{right:60px;bottom:140px;animation-delay:-2s}.e3{left:125px;bottom:40px;animation-delay:-3.5s}.e4{right:115px;bottom:70px;animation-delay:-1s}
+.rune-description{max-width:445px;width:100%;text-align:center}
+.rune-description h2{font-size:31px;letter-spacing:.01em;margin-bottom:18px}
+.rune-description>p{font-size:14px;line-height:1.9;color:#b9c4d0;max-width:370px;margin:auto}
+.rune-stages{display:flex;justify-content:center;gap:18px;font-size:11px;color:var(--muted);margin-bottom:26px}
+.rune-stages span+span:before{content:"";display:inline-block;vertical-align:middle;width:3px;height:3px;border-radius:50%;background:var(--rune);margin-right:18px}
+.rune-description .primary{background:rgba(var(--rune-rgb),.13);border-color:rgba(var(--rune-rgb),.6);color:white;padding:13px 26px}
+.rune-description .primary:hover{background:rgba(var(--rune-rgb),.25)}
+/* 코어 — 업로드 원을 중심으로 룬이 궤도를 돈다 (2026-10-20).
+   --turn 을 등록해야 그 값이 변하는 동안의 각도가 그려진다. 모든 룬이 같은 값을 물려받아 함께 돈다.
+   궤도는 원보다 커서 위쪽 룬은 원 위로, 앞 룬은 원 아래로 온다 — 둘이어도 겹치지 않는다. */
+@property --turn{syntax:'<number>';inherits:true;initial-value:0}
+.core-stage{--core-size:320px;--pad:calc(var(--core-size)*.42 + 60px);--cy:calc(var(--pad) + var(--core-size)/2);position:relative;isolation:isolate;width:min(780px,100%);margin:0 auto;padding:var(--pad) 0 calc(var(--core-size)*.31 + 100px);touch-action:pan-y}
+.core-stage.spins{cursor:grab;user-select:none}
+.core-stage.turning,.core-stage.turning .nexus{cursor:grabbing}
+.core-stage .nexus{margin:0 auto}
+.orbit{position:absolute;inset:0;pointer-events:none}
+.orbit:after{content:"";position:absolute;left:50%;top:calc(var(--cy) + var(--core-size)*.81 + 34px);width:150px;height:26px;transform:translateX(-50%);border-radius:50%;background:radial-gradient(ellipse,rgba(var(--rune-rgb),.42),transparent 70%);filter:blur(7px);transition:background .6s}
+/* 룬 그래프 — 자리·크기·깊이는 app.js placeGraph 가 매 프레임 정한다. 원(z 2) 앞의 노드는 3, 뒤는 1 */
+.core-stage .nexus{z-index:2}
+.graph-links{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:1}
+.graph-links line{stroke:rgba(var(--rune-rgb),1);stroke-width:1;stroke-dasharray:2 5;stroke-linecap:round}
+.orbit-item{position:absolute;left:0;top:0;width:150px;margin:-41px 0 0 -75px;pointer-events:auto;display:flex;flex-direction:column;align-items:center;gap:12px;background:none;border:0;padding:10px 6px;color:var(--muted);font-size:13px;line-height:1.35;transform-origin:50% 41px}
+.orbit-item>span:last-child{max-width:140px;word-break:keep-all;overflow-wrap:anywhere}
+.orbit-item .rune-sigil{width:62px;height:62px;transition:transform 1.4s cubic-bezier(.35,.05,.1,1),filter 1.4s}
+.orbit-item.front{color:var(--text)}
+.orbit-item.front .rune-sigil{transform:scale(1.25);filter:drop-shadow(0 12px 16px rgba(var(--rune-rgb),.32))}
+.orbit-item:not(.front):hover{opacity:.95}
+.turning .orbit-item{cursor:grabbing}
+/* 내 룬 — 체크가 코어에 보일지 정한다. 끈 룬은 흐리게 (2026-10-20) */
+.tree-row{display:flex;align-items:center;gap:8px;position:relative;transition:opacity .35s var(--ease),filter .35s}
+.tree-row .tree-rune{flex:1;min-width:0}
+.tree-row.off{opacity:.36;filter:grayscale(.9)}
+.tree-row.off:hover,.tree-row.off:focus-within{opacity:.72}
+@keyframes rune-spin{to{transform:rotate(360deg)}}@keyframes rune-breath{50%{opacity:.4;transform:scale(.92)}}@keyframes relic-hover{50%{transform:translateY(-7px)}}@keyframes ember-rise{0%{transform:translateY(0);opacity:0}20%{opacity:1}100%{transform:translateY(-160px);opacity:0}}
+.motion-paused .sigil-ring,.motion-paused .sigil-spark,.motion-paused .relic-aura,.motion-paused .large,.motion-paused .ember{animation-play-state:paused}
+@media(max-width:1100px){.grimoire{grid-template-columns:40% 60%}.tree-rune{gap:17px}.tree-copy strong{font-size:16px}.tree-rune .rune-sigil{width:62px;height:62px}.rune-tree:before{left:31px}.tree-check{padding-right:4px}.rune-showcase{padding:0 10px}.nexus-agent .agent{width:440px;height:440px}}
+@media(max-width:760px){.nexus-title{margin-top:6px}.nexus-title h1{font-size:22px}.nexus{height:345px;margin-top:0}.nexus-agent .agent{width:365px;height:365px;max-width:110vw}.nexus-hint{bottom:0}.rune-sigil{width:55px;height:55px}.grimoire{display:flex;flex-direction:column;min-height:0}.rune-left{padding:0}.rune-left h1{font-size:27px}.rune-intro{margin-top:8px}.rune-tree{flex-direction:row;gap:23px;margin:28px 0 20px;justify-content:center}.rune-tree:before{left:40px;right:40px;top:30px;bottom:auto;width:auto;height:1px}.tree-rune{flex-direction:column;gap:14px;min-width:120px;padding:0;text-align:center}.tree-rune .rune-sigil{width:62px;height:62px}.tree-copy{gap:7px}.tree-copy strong{font-size:14px}.tree-copy small{display:none}.tree-check{margin-right:4px}.rune-count{display:none}.rune-showcase{border-left:0;border-top:1px solid var(--line);margin-top:8px;padding-top:12px}.rune-relic{transform:scale(.8);margin:-30px 0 -18px}.rune-description h2{font-size:27px}.rune-description>p{font-size:13px}.rune-description .primary{width:100%}.rune-description{padding-bottom:12px}.rune-atmosphere{inset:0 -20px}}
+@media(prefers-reduced-motion:reduce){.sigil-ring,.sigil-spark,.relic-aura,.large,.ember{animation:none!important}.ember{opacity:.4}}
+@media(max-width:760px){.rune-showcase{overflow:clip}.rune-atmosphere{inset:0}.nexus-scene{overflow:clip}}
+.agent-mark[data-rune]{filter:drop-shadow(0 0 9px rgba(var(--rune-rgb),.4))}

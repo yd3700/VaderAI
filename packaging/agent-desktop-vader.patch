@@ -1,0 +1,1761 @@
+diff --git a/crates/core/examples/locator_benchmark/adapter.rs b/crates/core/examples/locator_benchmark/adapter.rs
+index dcf69a3b..1c9b422b 100644
+--- a/crates/core/examples/locator_benchmark/adapter.rs
++++ b/crates/core/examples/locator_benchmark/adapter.rs
+@@ -109,6 +109,8 @@ fn identifier_matches(
+                 || node.identifiers.1.as_deref() == Some(value)
+         }
+         IdentifierKind::AutomationId
++        | IdentifierKind::ParentAutomationId
++        | IdentifierKind::MenuPath
+         | IdentifierKind::RuntimeId
+         | IdentifierKind::AtspiObjectPath => false,
+     }
+diff --git a/crates/core/src/actionability/actionability_closed_menu_tests.rs b/crates/core/src/actionability/actionability_closed_menu_tests.rs
+new file mode 100644
+index 00000000..83b2db38
+--- /dev/null
++++ b/crates/core/src/actionability/actionability_closed_menu_tests.rs
+@@ -0,0 +1,203 @@
++use super::*;
++use std::sync::atomic::{AtomicU32, Ordering};
++
++struct MenuAdapter {
++    live: LiveElement,
++    vouches: bool,
++    asked: AtomicU32,
++}
++
++impl ObservationOps for MenuAdapter {
++    fn get_live_element(
++        &self,
++        _handle: &NativeHandle,
++        _deadline: crate::Deadline,
++    ) -> Result<LiveElement, AdapterError> {
++        Ok(self.live.clone())
++    }
++
++    fn is_closed_menu_command(
++        &self,
++        _handle: &NativeHandle,
++        _deadline: crate::Deadline,
++    ) -> Result<bool, AdapterError> {
++        self.asked.fetch_add(1, Ordering::SeqCst);
++        Ok(self.vouches)
++    }
++
++    fn hit_test(
++        &self,
++        _handle: &NativeHandle,
++        _point: crate::Point,
++        _deadline: crate::Deadline,
++    ) -> Result<crate::adapter::hit_test::HitTestResult, AdapterError> {
++        Ok(crate::adapter::hit_test::HitTestResult::ReachesTarget)
++    }
++}
++
++impl ActionOps for MenuAdapter {}
++impl InputOps for MenuAdapter {}
++impl SystemOps for MenuAdapter {}
++
++/// An offscreen-reporting element with real bounds, the WinForms menu shape.
++fn offscreen(role: &str, actions: &[&str], vouches: bool) -> (RefEntry, MenuAdapter) {
++    let mut target = entry();
++    target.identity.role = role.into();
++    let bounds = Rect {
++        x: 10.0,
++        y: 10.0,
++        width: 80.0,
++        height: 20.0,
++    };
++    target.geometry.bounds = Some(bounds);
++    target.geometry.bounds_hash = bounds.bounds_hash();
++    let live = LiveElement {
++        identity: crate::adapter::live_identity("OK"),
++        state: ElementState {
++            role: role.into(),
++            states: vec![crate::tree::state::OFFSCREEN.into()],
++            value: None,
++            enabled: Some(true),
++            hidden: None,
++            offscreen: Some(true),
++        },
++        states_complete: true,
++        bounds: Some(bounds),
++        available_actions: actions.iter().map(|action| (*action).into()).collect(),
++    };
++    let adapter = MenuAdapter {
++        live,
++        vouches,
++        asked: AtomicU32::new(0),
++    };
++    (target, adapter)
++}
++
++fn run(
++    target: &RefEntry,
++    adapter: &MenuAdapter,
++    request: ActionRequest,
++) -> Result<report::ActionabilityReport, AdapterError> {
++    check_live(target, &NativeHandle::null(), adapter, &request)
++}
++
++fn refused_on_visible(result: Result<report::ActionabilityReport, AdapterError>) {
++    let error = result.expect_err("the offscreen report must still refuse");
++    assert!(error.message.contains("visible"), "{}", error.message);
++}
++
++#[test]
++fn a_vouched_closed_menu_command_is_clicked_semantically_despite_offscreen() {
++    let (target, adapter) = offscreen("menuitem", &[capability::CLICK], true);
++    let report = run(&target, &adapter, ActionRequest::headless(Action::Click)).unwrap();
++
++    assert!(report.actionable);
++    assert_eq!(report.pointer_delivery, PointerDelivery::Semantic);
++    assert_eq!(report.verified_point, None, "no pointer is aimed");
++    assert_eq!(adapter.asked.load(Ordering::SeqCst), 1);
++}
++
++#[test]
++fn an_unvouched_offscreen_menu_item_is_still_refused() {
++    let (target, adapter) = offscreen("menuitem", &[capability::CLICK], false);
++
++    refused_on_visible(run(
++        &target,
++        &adapter,
++        ActionRequest::headless(Action::Click),
++    ));
++    assert_eq!(adapter.asked.load(Ordering::SeqCst), 1);
++}
++
++#[test]
++fn the_exception_is_never_asked_outside_a_headless_semantic_menu_click() {
++    let cases: [(&str, &[&str], ActionRequest); 5] = [
++        (
++            "button",
++            &[capability::CLICK],
++            ActionRequest::headless(Action::Click),
++        ),
++        ("menuitem", &[], ActionRequest::headless(Action::Click)),
++        (
++            "menuitem",
++            &[capability::CLICK],
++            ActionRequest::headed(Action::Click),
++        ),
++        (
++            "menuitem",
++            &[capability::CLICK],
++            ActionRequest::headless(Action::Hover),
++        ),
++        (
++            "menuitem",
++            &[capability::EXPAND],
++            ActionRequest::headless(Action::Expand),
++        ),
++    ];
++    for (role, actions, request) in cases {
++        let (target, adapter) = offscreen(role, actions, true);
++        let label = format!("{role} {actions:?} {:?}", request.action);
++
++        assert!(run(&target, &adapter, request).is_err(), "{label}");
++        assert_eq!(adapter.asked.load(Ordering::SeqCst), 0, "{label}");
++    }
++}
++
++#[test]
++fn hidden_or_incomplete_state_keeps_the_gate_closed_without_asking() {
++    let (target, mut adapter) = offscreen("menuitem", &[capability::CLICK], true);
++    adapter.live.state.hidden = Some(true);
++    refused_on_visible(run(
++        &target,
++        &adapter,
++        ActionRequest::headless(Action::Click),
++    ));
++
++    let (target, mut incomplete) = offscreen("menuitem", &[capability::CLICK], true);
++    incomplete.live.states_complete = false;
++    assert!(run(&target, &incomplete, ActionRequest::headless(Action::Click)).is_err());
++
++    assert_eq!(adapter.asked.load(Ordering::SeqCst), 0);
++    assert_eq!(incomplete.asked.load(Ordering::SeqCst), 0);
++}
++
++#[test]
++fn a_disabled_closed_menu_command_is_refused_by_the_enabled_gate() {
++    let (target, mut adapter) = offscreen("menuitem", &[capability::CLICK], true);
++    adapter.live.state.enabled = Some(false);
++    adapter
++        .live
++        .state
++        .states
++        .push(crate::tree::state::DISABLED.into());
++
++    let error = run(&target, &adapter, ActionRequest::headless(Action::Click))
++        .expect_err("a disabled command is not sent");
++    assert!(error.message.contains("enabled"), "{}", error.message);
++}
++
++/// The exception replaces any visibility `Fail`, not only the offscreen one:
++/// a command has no position, so a vouched item with zero-sized bounds is
++/// sent the same way. `Unknown` visibility is never replaced.
++#[test]
++fn a_vouched_command_with_zero_sized_bounds_is_also_sent() {
++    let (target, mut adapter) = offscreen("menuitem", &[capability::CLICK], true);
++    let empty = Rect {
++        x: 0.0,
++        y: 0.0,
++        width: 0.0,
++        height: 0.0,
++    };
++    adapter.live.bounds = Some(empty);
++    adapter.live.state.offscreen = Some(false);
++    adapter.live.state.states.clear();
++    let mut target = target;
++    target.geometry.bounds = Some(empty);
++    target.geometry.bounds_hash = empty.bounds_hash();
++
++    assert!(
++        run(&target, &adapter, ActionRequest::headless(Action::Click))
++            .unwrap()
++            .actionable
++    );
++}
+diff --git a/crates/core/src/actionability/actionability_semantic_geometry_tests.rs b/crates/core/src/actionability/actionability_semantic_geometry_tests.rs
+index b75b702c..3d91f54e 100644
+--- a/crates/core/src/actionability/actionability_semantic_geometry_tests.rs
++++ b/crates/core/src/actionability/actionability_semantic_geometry_tests.rs
+@@ -3,6 +3,9 @@ use super::*;
+ #[path = "actionability_nonspatial_tests.rs"]
+ mod nonspatial_tests;
+ 
++#[path = "actionability_closed_menu_tests.rs"]
++mod closed_menu_tests;
++
+ struct GeometryAdapter(LiveElement);
+ 
+ impl ObservationOps for GeometryAdapter {
+diff --git a/crates/core/src/actionability/evaluate.rs b/crates/core/src/actionability/evaluate.rs
+index 79dc9b7e..ab612732 100644
+--- a/crates/core/src/actionability/evaluate.rs
++++ b/crates/core/src/actionability/evaluate.rs
+@@ -179,7 +179,14 @@ fn build_report_with_requirement(
+         {
+             return Err(refusal);
+         }
+-        checks.push(visibility);
++        checks.push(gates::visible_or_menu_command(
++            visibility,
++            evidence,
++            request,
++            without_pointer,
++            hit_test,
++            deadline,
++        )?);
+     }
+     if requirements.requires_stability(pointer_delivery) {
+         checks.push(if without_pointer {
+diff --git a/crates/core/src/actionability/gates.rs b/crates/core/src/actionability/gates.rs
+index f5fd8bc8..ade1a527 100644
+--- a/crates/core/src/actionability/gates.rs
++++ b/crates/core/src/actionability/gates.rs
+@@ -68,6 +68,38 @@ pub(super) fn visibility(
+     pass("visible")
+ }
+ 
++/// A menu item is a command, not a screen position: a headless semantic click
++/// never aims a pointer, so a provider's offscreen report on one does not
++/// refuse it when the adapter vouches for the platform shape. Hidden state,
++/// every other action, and every pointer-delivered click keep the gate.
++pub(super) fn visible_or_menu_command(
++    visibility: ActionabilityCheck,
++    evidence: &ActionabilityEvidence,
++    request: &ActionRequest,
++    delivered_without_pointer: bool,
++    hit_test: Option<(
++        &crate::adapter::NativeHandle,
++        &dyn crate::adapter::PlatformAdapter,
++    )>,
++    deadline: crate::Deadline,
++) -> Result<ActionabilityCheck, crate::AdapterError> {
++    let applies = delivered_without_pointer
++        && matches!(request.action, Action::Click)
++        && matches!(visibility.status, super::status::ActionabilityStatus::Fail)
++        && evidence.state.role == "menuitem"
++        && evidence.states_complete
++        && evidence.state.hidden != Some(true)
++        && !crate::tree::state::has_state(&evidence.state.states, crate::tree::state::HIDDEN);
++    match hit_test {
++        Some((handle, adapter))
++            if applies && adapter.is_closed_menu_command(handle, deadline)? =>
++        {
++            Ok(pass("visible"))
++        }
++        _ => Ok(visibility),
++    }
++}
++
+ pub(super) fn stability_without_pointer(
+     evidence: &ActionabilityEvidence,
+     expectation: super::stability::StabilityExpectation,
+diff --git a/crates/core/src/adapter/observation.rs b/crates/core/src/adapter/observation.rs
+index a64fb7a3..1bf2fc6b 100644
+--- a/crates/core/src/adapter/observation.rs
++++ b/crates/core/src/adapter/observation.rs
+@@ -51,6 +51,18 @@ pub trait ObservationOps: Send + Sync {
+         Ok(self.is_nonspatial_target(handle))
+     }
+ 
++    /// Reports a menu item its platform keeps invocable while its menu is
++    /// closed, under a host and top-level window that are shown and not minimized. Core asks only before
++    /// a headless semantic click whose visibility check failed; the live
++    /// state keeps the provider's own offscreen report either way.
++    fn is_closed_menu_command(
++        &self,
++        _handle: &NativeHandle,
++        _deadline: Deadline,
++    ) -> Result<bool, AdapterError> {
++        Ok(false)
++    }
++
+     fn observe_tree(
+         &self,
+         _root: ObservationRoot<'_>,
+diff --git a/crates/core/src/refs/ref_capture_proof_parent_tests.rs b/crates/core/src/refs/ref_capture_proof_parent_tests.rs
+new file mode 100644
+index 00000000..7a639586
+--- /dev/null
++++ b/crates/core/src/refs/ref_capture_proof_parent_tests.rs
+@@ -0,0 +1,71 @@
++use super::*;
++
++fn edit_evidence(identifiers: IdentifierEvidence) -> LocatorEvidence {
++    LocatorEvidence {
++        identifiers,
++        ..evidence("textfield", "", Vec::new(), 0)
++    }
++}
++
++fn scoped(value: &str) -> IdentifierEvidence {
++    IdentifierEvidence::typed(
++        [identifier(IdentifierKind::ParentAutomationId, value)],
++        Some(0),
++        true,
++    )
++}
++
++fn twin_edits(first: IdentifierEvidence, second: IdentifierEvidence) -> ObservedTree {
++    let leaf =
++        |identifiers| ObservedSubtree::new(edit_evidence(identifiers), Vec::new(), true, None);
++    ObservedTree::from_roots(
++        vec![ObservedSubtree::new(
++            evidence("window", "Fixture", Vec::new(), 0),
++            vec![leaf(first), leaf(second)],
++            true,
++            None,
++        )],
++        ObservationSource::Window {
++            window: fixture_window(),
++            surface: crate::SnapshotSurface::Window,
++            renderer_accessibility_forced: false,
++        },
++        LocatorStats::default(),
++        true,
++    )
++    .expect("the fixture observes")
++}
++
++fn edit_node(native_id: Option<&str>) -> AccessibilityNode {
++    let mut node = named("textfield", "");
++    node.identity.native_id =
++        native_id.map(|value| identifier(IdentifierKind::ParentAutomationId, value));
++    node
++}
++
++/// VaderAI patch (codex1 회신 2 P1-1): two Edits share role, name and real
++/// parent `P`. Whichever one failed its parent read carries unknown identifier
++/// evidence, so neither the failed one nor its twin is proven unique - the
++/// failure moving between the two never proves the wrong one.
++#[test]
++fn a_twin_whose_parent_read_failed_proves_neither_edit_unique() {
++    for failed_first in [true, false] {
++        let (first, second) = if failed_first {
++            (IdentifierEvidence::unknown(), scoped("P/x"))
++        } else {
++            (scoped("P/x"), IdentifierEvidence::unknown())
++        };
++        let ids = if failed_first {
++            [None, Some("P/x")]
++        } else {
++            [Some("P/x"), None]
++        };
++        let root = window(ids.into_iter().map(edit_node).collect());
++        assert_eq!(flags(root, &twin_edits(first, second)), [false, false]);
++    }
++    let root = window(vec![edit_node(Some("P/x")), edit_node(Some("Q/x"))]);
++    assert_eq!(
++        flags(root, &twin_edits(scoped("P/x"), scoped("Q/x"))),
++        [true, true]
++    );
++}
+diff --git a/crates/core/src/refs/ref_capture_proof_tests.rs b/crates/core/src/refs/ref_capture_proof_tests.rs
+index 4234fd16..5deab49a 100644
+--- a/crates/core/src/refs/ref_capture_proof_tests.rs
++++ b/crates/core/src/refs/ref_capture_proof_tests.rs
+@@ -340,3 +340,6 @@ fn a_skipped_native_sibling_does_not_unprove_the_refs_after_it() {
+ 
+     assert_eq!(flags(root, &observed), [true, true]);
+ }
++
++#[path = "ref_capture_proof_parent_tests.rs"]
++mod parent_scoped;
+diff --git a/crates/core/src/refs/resolve_saved_ref_tests.rs b/crates/core/src/refs/resolve_saved_ref_tests.rs
+index 82d7c8ab..c17a366d 100644
+--- a/crates/core/src/refs/resolve_saved_ref_tests.rs
++++ b/crates/core/src/refs/resolve_saved_ref_tests.rs
+@@ -254,3 +254,74 @@ fn an_unproven_entry_is_never_landed_provisionally() {
+     assert_eq!(error.details.unwrap()["kind"], "identity_not_unique");
+     assert_eq!(adapter.counts(), (0, 0, 0, 0));
+ }
++
++fn live_edits(
++    identifiers: [crate::locator::live_locator::IdentifierEvidence; 2],
++) -> crate::locator::live_locator::ObservedTree {
++    use crate::locator::live_locator::{
++        LocatorEvidence, LocatorField, LocatorRefEvidence, LocatorStats, ObservationSource,
++        ObservedSubtree, ObservedTree,
++    };
++    let evidence = |role: &str, identifiers| LocatorEvidence {
++        role: LocatorField::Known(role.into()),
++        name: LocatorField::Known(String::new()),
++        description: LocatorField::Absent,
++        value: LocatorField::Absent,
++        identifiers,
++        states: LocatorField::Known(Vec::new()),
++        ref_evidence: LocatorRefEvidence {
++            window_bounds: LocatorField::Absent,
++            bounds: LocatorField::Absent,
++            available_actions: LocatorField::Known(Vec::new()),
++            descriptors: Default::default(),
++        },
++    };
++    let leaves = identifiers
++        .into_iter()
++        .map(|ids| ObservedSubtree::new(evidence("textfield", ids), Vec::new(), true, None))
++        .collect();
++    let root = evidence(
++        "window",
++        crate::locator::live_locator::IdentifierEvidence::absent(),
++    );
++    ObservedTree::from_roots(
++        vec![ObservedSubtree::new(root, leaves, true, None)],
++        ObservationSource::Window {
++            window: window(),
++            surface: crate::SnapshotSurface::Window,
++            renderer_accessibility_forced: false,
++        },
++        LocatorStats::default(),
++        true,
++    )
++    .expect("the fixture observes")
++}
++
++/// VaderAI patch (codex1 회신 2 P1-1): a saved Edit ref recorded as `P/x` never
++/// resolves while a live Edit could not read its parent - whether the failed
++/// one is the target or its twin - and a plain `x` never stands in for `P/x`.
++#[test]
++fn a_parent_scoped_edit_refuses_while_any_twin_parent_is_unknown() {
++    use crate::locator::live_locator::IdentifierEvidence;
++    use crate::{ElementIdentifier, IdentifierKind};
++    let id = |kind, value: &str| ElementIdentifier {
++        kind,
++        value: value.into(),
++    };
++    let known = |kind, value| IdentifierEvidence::typed([id(kind, value)], Some(0), true);
++    let scoped = |value| known(IdentifierKind::ParentAutomationId, value);
++    let mut saved = crate::adapter::minimal_ref_entry("textfield", Some(""));
++    saved.identity.native_id = Some(id(IdentifierKind::ParentAutomationId, "P/x"));
++    let refused = |live| super::unique_live_match(&saved, &live_edits(live)).is_err();
++
++    assert!(refused([IdentifierEvidence::unknown(), scoped("P/x")]));
++    assert!(refused([scoped("P/x"), IdentifierEvidence::unknown()]));
++    assert!(refused([
++        known(IdentifierKind::AutomationId, "x"),
++        scoped("Q/x")
++    ]));
++    assert_eq!(
++        super::unique_live_match(&saved, &live_edits([scoped("Q/x"), scoped("P/x")])).ok(),
++        Some(2)
++    );
++}
+diff --git a/crates/core/src/tree/identifier_kind.rs b/crates/core/src/tree/identifier_kind.rs
+index f0333c77..7cc48e4d 100644
+--- a/crates/core/src/tree/identifier_kind.rs
++++ b/crates/core/src/tree/identifier_kind.rs
+@@ -8,5 +8,11 @@ pub enum IdentifierKind {
+     AutomationId,
+     RuntimeId,
+     AtspiObjectPath,
++    /// VaderAI patch: `parent/self` AutomationIds of a Windows Edit, `\` and `/`
++    /// escaped; a kind of its own so it never equals a plain `AutomationId`.
++    ParentAutomationId,
++    /// VaderAI patch: names of the menu items above a Windows menu item that
++    /// has no AutomationId, own name last, `/`-joined with `\\` and `/` escaped.
++    MenuPath,
+     Unknown,
+ }
+diff --git a/crates/windows/src/actions/select_search.rs b/crates/windows/src/actions/select_search.rs
+index efa6cf7d..5d450db4 100644
+--- a/crates/windows/src/actions/select_search.rs
++++ b/crates/windows/src/actions/select_search.rs
+@@ -81,7 +81,7 @@ mod imp {
+         prior: Option<&UIAElement>,
+     ) -> Result<Option<UIAElement>, AdapterError> {
+         let client = automation_client()?;
+-        let source = UiaTreeSource::for_root(root)?;
++        let source = UiaTreeSource::for_root(root)?.bound_to(deadline);
+         let prepared = source.prepare_root(root)?;
+         let mut stack = Vec::new();
+         push_children(&source, (&prepared, 1), deadline, 0, &mut stack)?;
+diff --git a/crates/windows/src/adapter.rs b/crates/windows/src/adapter.rs
+index dae424b7..ecec34ed 100644
+--- a/crates/windows/src/adapter.rs
++++ b/crates/windows/src/adapter.rs
+@@ -148,6 +148,17 @@ impl ObservationOps for WindowsAdapter {
+         Ok(Some(crate::tree::live_read::live_actions(&read)?))
+     }
+ 
++    fn is_closed_menu_command(
++        &self,
++        handle: &NativeHandle,
++        deadline: Deadline,
++    ) -> Result<bool, AdapterError> {
++        let element = crate::tree::element::uia_element(handle)?;
++        Ok(crate::tree::menu_command::is_closed_menu_command(
++            element, deadline,
++        ))
++    }
++
+     fn get_live_element(
+         &self,
+         handle: &NativeHandle,
+diff --git a/crates/windows/src/tree/live_read.rs b/crates/windows/src/tree/live_read.rs
+index 18a45b9c..a4cab632 100644
+--- a/crates/windows/src/tree/live_read.rs
++++ b/crates/windows/src/tree/live_read.rs
+@@ -85,7 +85,15 @@ mod imp {
+             deadline,
+             outside_visible_area,
+             corroborate_verified_process,
+-            |element| read_live_bounded(element, deadline),
++            |element| {
++                let (mut properties, errors) = read_live_bounded(element, deadline);
++                crate::tree::properties::identity_scope::scope_menu_item_live(
++                    element,
++                    &mut properties,
++                    Some(deadline),
++                );
++                (properties, errors)
++            },
+             |element| read_label(element, false),
+         )
+     }
+diff --git a/crates/windows/src/tree/menu_command.rs b/crates/windows/src/tree/menu_command.rs
+new file mode 100644
+index 00000000..2f090fa6
+--- /dev/null
++++ b/crates/windows/src/tree/menu_command.rs
+@@ -0,0 +1,77 @@
++//! WinForms menu items as commands rather than screen positions.
++//!
++//! A ToolStrip menu item stays invocable while its drop-down is closed, and
++//! its `IsOffscreen` is no visibility evidence at all: with a drop-down open
++//! and painting its items 35 of 38 read offscreen, while 18 of 210 items of
++//! closed sibling menus read on-screen; `Invoke` on a closed-menu item ran its
++//! command (measured live on a WinForms menu host, 2026-11-16). The live read
++//! keeps reporting what the provider says. This answers only the question
++//! core's visibility gate asks before a headless semantic click.
++
++use agent_desktop_core::Deadline;
++
++use super::hit_test::corroborate::{first_native_hwnd, root_of_hwnd};
++use crate::tree::automation::automation_client;
++use crate::tree::element::UIAElement;
++
++const WINFORMS_CLASS_PREFIX: &str = "WindowsForms10.";
++
++/// Whether the element is a WinForms menu item whose host control and
++/// top-level window both exist, are shown, and are not minimized. Every failed
++/// read answers no; the window state is asked last so it is the freshest fact.
++pub(crate) fn is_closed_menu_command(element: &UIAElement, deadline: Deadline) -> bool {
++    use uiautomation::types::ControlType;
++    if !matches!(element.0.get_control_type(), Ok(ControlType::MenuItem)) {
++        return false;
++    }
++    let Some(walker) = automation_client()
++        .ok()
++        .and_then(|client| client.get_raw_view_walker().ok())
++    else {
++        return false;
++    };
++    let Ok(Some(host)) = first_native_hwnd(element, &walker, deadline) else {
++        return false;
++    };
++    let Some(root) = root_of_hwnd(host) else {
++        return false;
++    };
++    is_winforms_class(&class_name(host)) && !deadline.is_expired() && shown(host, root)
++}
++
++/// Both windows are live and visible (a child's visibility includes every
++/// ancestor's) and the top-level one is not minimized.
++pub(crate) fn shown(host: isize, root: isize) -> bool {
++    use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow, IsWindowVisible};
++
++    let (host, root) = (host as *mut std::ffi::c_void, root as *mut std::ffi::c_void);
++    unsafe {
++        IsWindow(host) != 0
++            && IsWindow(root) != 0
++            && IsWindowVisible(host) != 0
++            && IsWindowVisible(root) != 0
++            && IsIconic(root) == 0
++    }
++}
++
++fn class_name(hwnd: isize) -> String {
++    use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
++
++    let mut buffer = [0u16; 256];
++    let length = unsafe {
++        GetClassNameW(
++            hwnd as *mut std::ffi::c_void,
++            buffer.as_mut_ptr(),
++            buffer.len() as i32,
++        )
++    };
++    String::from_utf16_lossy(&buffer[..usize::try_from(length).unwrap_or(0)])
++}
++
++pub(crate) fn is_winforms_class(class: &str) -> bool {
++    class.starts_with(WINFORMS_CLASS_PREFIX)
++}
++
++#[cfg(test)]
++#[path = "menu_command_tests.rs"]
++mod tests;
+diff --git a/crates/windows/src/tree/menu_command_tests.rs b/crates/windows/src/tree/menu_command_tests.rs
+new file mode 100644
+index 00000000..84d6d906
+--- /dev/null
++++ b/crates/windows/src/tree/menu_command_tests.rs
+@@ -0,0 +1,55 @@
++use super::{is_winforms_class, shown};
++use crate::tree::fixture::{LocalFixture, bootstrap};
++use std::time::Duration;
++use windows_sys::Win32::UI::WindowsAndMessaging::{SW_HIDE, ShowWindow};
++
++#[test]
++fn only_a_winforms_host_class_qualifies() {
++    assert!(is_winforms_class(
++        "WindowsForms10.Window.8.app.0.141b42a_r9_ad1"
++    ));
++    assert!(!is_winforms_class("#32768"));
++    assert!(!is_winforms_class("HwndWrapper[App;;x]"));
++    assert!(!is_winforms_class(""));
++}
++
++#[test]
++fn a_shown_restored_window_qualifies() {
++    bootstrap();
++    let fixture = LocalFixture::create().expect("the fixture window is created");
++
++    assert!(shown(fixture.handle(), fixture.handle()));
++}
++
++#[test]
++fn a_minimized_window_does_not_qualify() {
++    bootstrap();
++    let fixture = LocalFixture::create().expect("the fixture window is created");
++    fixture.minimize();
++    std::thread::sleep(Duration::from_millis(250));
++
++    assert!(!shown(fixture.handle(), fixture.handle()));
++}
++
++#[test]
++fn a_hidden_but_not_minimized_window_does_not_qualify() {
++    bootstrap();
++    let fixture = LocalFixture::create().expect("the fixture window is created");
++    unsafe { ShowWindow(fixture.handle() as *mut std::ffi::c_void, SW_HIDE) };
++    std::thread::sleep(Duration::from_millis(250));
++
++    assert!(!shown(fixture.handle(), fixture.handle()));
++}
++
++#[test]
++fn a_vanished_window_does_not_qualify() {
++    bootstrap();
++    let handle = {
++        let fixture = LocalFixture::create().expect("the fixture window is created");
++        fixture.handle()
++    };
++    std::thread::sleep(Duration::from_millis(250));
++
++    assert!(!shown(handle, handle));
++    assert!(!shown(0, 0));
++}
+diff --git a/crates/windows/src/tree/mod.rs b/crates/windows/src/tree/mod.rs
+index e91a867a..719fd08b 100644
+--- a/crates/windows/src/tree/mod.rs
++++ b/crates/windows/src/tree/mod.rs
+@@ -4,6 +4,8 @@ pub mod chromium;
+ pub mod descriptor;
+ pub(crate) mod hit_test;
+ pub(crate) mod live_read;
++#[cfg(target_os = "windows")]
++pub(crate) mod menu_command;
+ pub(crate) mod minimized;
+ pub mod name_evidence;
+ pub(crate) mod observe;
+diff --git a/crates/windows/src/tree/properties/element_properties.rs b/crates/windows/src/tree/properties/element_properties.rs
+index 5d66280e..14380b76 100644
+--- a/crates/windows/src/tree/properties/element_properties.rs
++++ b/crates/windows/src/tree/properties/element_properties.rs
+@@ -77,6 +77,20 @@ impl ResolvedVocabulary {
+ pub struct ElementProperties {
+     entries: Vec<(TreeProperty, PropertyOutcome)>,
+     secure: bool,
++    /// VaderAI patch: the direct parent's AutomationId, read only for an Edit
++    /// that has its own. Some WinForms apps give every inner text box of a
++    /// custom control the same AutomationId (`m_pTextBox`), so those edits are
++    /// identical twins under the full predicate and every action refuses
++    /// `AMBIGUOUS_TARGET`; the wrapping control's id tells them apart.
++    /// `None` = not read (not an identified Edit). `Unknown` = the read failed,
++    /// which makes the Edit's identifier unknown rather than the plain id.
++    parent_automation_id: Option<PropertyOutcome>,
++    /// VaderAI patch: the names of the menu items above a menu item that has
++    /// no AutomationId, own name last, `/`-joined and escaped. WinForms menus
++    /// carry no ids and repeat item names across menus (38 names shared by 78
++    /// of 571 items on one host; none repeat under the full path), so the
++    /// name alone leaves twins. Same `None`/`Unknown` meaning as above.
++    menu_path: Option<PropertyOutcome>,
+ }
+ 
+ impl ElementProperties {
+@@ -95,7 +109,54 @@ impl ElementProperties {
+                 }
+             })
+             .collect();
+-        Self { entries, secure }
++        Self {
++            entries,
++            secure,
++            parent_automation_id: None,
++            menu_path: None,
++        }
++    }
++
++    pub fn set_parent_automation_id(&mut self, parent: PropertyOutcome) {
++        self.parent_automation_id = Some(match parent {
++            PropertyOutcome::Known(PropertyValue::Text(value)) if !value.trim().is_empty() => {
++                PropertyOutcome::Known(PropertyValue::Text(value))
++            }
++            PropertyOutcome::Unknown => PropertyOutcome::Unknown,
++            PropertyOutcome::Known(_) | PropertyOutcome::Absent => PropertyOutcome::Absent,
++        });
++    }
++
++    pub fn set_menu_path(&mut self, path: PropertyOutcome) {
++        self.menu_path = Some(match path {
++            PropertyOutcome::Known(PropertyValue::Text(value)) => {
++                PropertyOutcome::Known(PropertyValue::Text(value))
++            }
++            _ => PropertyOutcome::Unknown,
++        });
++    }
++
++    /// A MenuItem whose AutomationId was read and is empty or absent.
++    pub fn is_unidentified_menu_item(&self) -> bool {
++        matches!(
++            self.get(TreeProperty::ControlType),
++            PropertyOutcome::Known(PropertyValue::Number(50011))
++        ) && match self.get(TreeProperty::AutomationId) {
++            PropertyOutcome::Known(PropertyValue::Text(value)) => value.trim().is_empty(),
++            PropertyOutcome::Known(_) | PropertyOutcome::Absent => true,
++            PropertyOutcome::Unknown => false,
++        }
++    }
++
++    /// An Edit that reports its own non-empty AutomationId.
++    pub fn is_identified_edit(&self) -> bool {
++        matches!(
++            self.get(TreeProperty::ControlType),
++            PropertyOutcome::Known(PropertyValue::Number(50004))
++        ) && matches!(
++            self.get(TreeProperty::AutomationId),
++            PropertyOutcome::Known(PropertyValue::Text(value)) if !value.trim().is_empty()
++        )
+     }
+ 
+     /// Decides the secure-field gate from one `IsPassword` outcome.
+@@ -257,21 +318,45 @@ impl ElementProperties {
+         let automation_id = self.get(TreeProperty::AutomationId);
+         match automation_id {
+             PropertyOutcome::Known(PropertyValue::Text(value)) if !value.trim().is_empty() => {
+-                IdentifierEvidence::typed(
+-                    [ElementIdentifier {
+-                        kind: IdentifierKind::AutomationId,
+-                        value,
+-                    }],
+-                    Some(0),
+-                    true,
+-                )
++                let (kind, value) = match &self.parent_automation_id {
++                    Some(PropertyOutcome::Known(PropertyValue::Text(parent))) => (
++                        IdentifierKind::ParentAutomationId,
++                        format!("{}/{}", escape_id(parent), escape_id(&value)),
++                    ),
++                    Some(PropertyOutcome::Unknown) => return IdentifierEvidence::unknown(),
++                    _ => (IdentifierKind::AutomationId, value),
++                };
++                IdentifierEvidence::typed([ElementIdentifier { kind, value }], Some(0), true)
+             }
+-            PropertyOutcome::Known(_) | PropertyOutcome::Absent => IdentifierEvidence::absent(),
++            PropertyOutcome::Known(_) | PropertyOutcome::Absent => match &self.menu_path {
++                Some(PropertyOutcome::Known(PropertyValue::Text(path))) => {
++                    IdentifierEvidence::typed(
++                        [ElementIdentifier {
++                            kind: IdentifierKind::MenuPath,
++                            value: path.clone(),
++                        }],
++                        Some(0),
++                        true,
++                    )
++                }
++                Some(_) => IdentifierEvidence::unknown(),
++                None => IdentifierEvidence::absent(),
++            },
+             PropertyOutcome::Unknown => IdentifierEvidence::unknown(),
+         }
+     }
+ }
+ 
++/// VaderAI patch: `\` and `/` are escaped so the first bare `/` is always the
++/// parent/self boundary — `a/b`+`c` and `a`+`b/c` stay different.
++pub(crate) fn escape_id(id: &str) -> String {
++    id.replace('\\', "\\\\").replace('/', "\\/")
++}
++
+ #[cfg(test)]
+ #[path = "element_properties_tests.rs"]
+ mod tests;
++
++#[cfg(test)]
++#[path = "menu_path_tests.rs"]
++mod menu_path_tests;
+diff --git a/crates/windows/src/tree/properties/element_properties_tests.rs b/crates/windows/src/tree/properties/element_properties_tests.rs
+index 518fefe1..c4b2d044 100644
+--- a/crates/windows/src/tree/properties/element_properties_tests.rs
++++ b/crates/windows/src/tree/properties/element_properties_tests.rs
+@@ -94,3 +94,56 @@ fn a_rich_edit_value_drops_only_its_final_paragraph_mark() {
+         LocatorField::Known("hi".into())
+     );
+ }
++
++/// VaderAI patch: an identified Edit carries its parent's AutomationId under its
++/// own kind so WinForms twins (`m_pTextBox` under `txtSugaCd`) differ, and a
++/// failed parent read makes the identifier unknown instead of the plain id.
++#[test]
++fn an_identified_edit_is_scoped_by_its_parent_automation_id() {
++    let edit = |id: &str, parent: PropertyOutcome| {
++        let mut properties = ElementProperties::from_reads(vec![
++            (
++                TreeProperty::ControlType,
++                PropertyOutcome::Known(PropertyValue::Number(50004)),
++            ),
++            (
++                TreeProperty::AutomationId,
++                PropertyOutcome::Known(PropertyValue::Text(id.into())),
++            ),
++        ]);
++        assert!(properties.is_identified_edit());
++        properties.set_parent_automation_id(parent);
++        properties.identifier_evidence()
++    };
++    let text = |value: &str| PropertyOutcome::Known(PropertyValue::Text(value.into()));
++    let scoped = edit("m_pTextBox", text("txtSugaCd"));
++    let identifier = scoped.preferred_identifier().cloned();
++    assert_eq!(
++        identifier.map(|identifier| (identifier.kind, identifier.value)),
++        Some((
++            IdentifierKind::ParentAutomationId,
++            "txtSugaCd/m_pTextBox".into()
++        ))
++    );
++    for blank in [text("  "), PropertyOutcome::Absent] {
++        let plain = edit("m_pTextBox", blank);
++        let identifier = plain.preferred_identifier().cloned();
++        assert_eq!(
++            identifier.map(|identifier| (identifier.kind, identifier.value)),
++            Some((IdentifierKind::AutomationId, "m_pTextBox".into()))
++        );
++    }
++    let failed = edit("m_pTextBox", PropertyOutcome::Unknown);
++    assert!(!failed.is_complete());
++    assert!(failed.identifiers().is_empty());
++    let left = edit("c", text("a/b"));
++    let right = edit("b/c", text("a"));
++    assert_ne!(left.identifiers(), right.identifiers());
++    assert_eq!(left.preferred_value(), Some(r"a\/b/c"));
++    let plain_slash = edit("a/b", PropertyOutcome::Absent);
++    assert_ne!(
++        plain_slash.identifiers(),
++        edit("b", text("a")).identifiers()
++    );
++    assert_eq!(edit(r"x\", text("p")).preferred_value(), Some(r"p/x\\"));
++}
+diff --git a/crates/windows/src/tree/properties/identity_scope.rs b/crates/windows/src/tree/properties/identity_scope.rs
+new file mode 100644
+index 00000000..7d4b007d
+--- /dev/null
++++ b/crates/windows/src/tree/properties/identity_scope.rs
+@@ -0,0 +1,188 @@
++//! VaderAI patch: identity that one element cannot report about itself, read
++//! with live hops to its raw-view ancestors. Every failed or unfinished read
++//! is `Unknown`, which makes the element's identifier unknown, so it can
++//! neither prove nor match a twin.
++
++use agent_desktop_core::Deadline;
++use uiautomation::types::ControlType;
++
++use super::element_properties::{ElementProperties, escape_id};
++use super::property_ids::TreeProperty;
++use super::property_outcome::{PropertyOutcome, PropertyValue};
++use crate::tree::element::UIAElement;
++
++/// Most names a menu path holds, own name included; menus nest a handful
++/// deep, so a longer chain is not a menu path. The walk and the live climb
++/// both stop here.
++pub(crate) const MAX_MENU_DEPTH: usize = 8;
++
++/// One live hop to the raw-view parent, read only for an identified Edit.
++/// Direct parent only; a wrapper that nests the box deeper is not seen.
++pub(super) fn parent_automation_id(element: &UIAElement) -> PropertyOutcome {
++    let read = || -> Option<String> {
++        let client = crate::tree::automation::automation_client().ok()?;
++        let walker = client.get_raw_view_walker().ok()?;
++        walker.get_parent(&element.0).ok()?.get_automation_id().ok()
++    };
++    match read() {
++        Some(id) if !id.trim().is_empty() => PropertyOutcome::Known(PropertyValue::Text(id)),
++        Some(_) => PropertyOutcome::Absent,
++        None => PropertyOutcome::Unknown,
++    }
++}
++
++/// The variable a caller sets to `1` to turn menu-path identity on for one
++/// engine process.
++pub(crate) const MENU_PATH_IDENTITY_ENV: &str = "AGENT_DESKTOP_MENU_PATH_IDENTITY";
++
++/// Whether this process identifies id-less menu items by their menu path.
++///
++/// Off unless the caller opts in. The path is built from the walk's child
++/// relation, and the single-element live read climbs the parent relation;
++/// the two agree on the WinForms menus measured (571 of 571 items on one
++/// host, and a second app) but not everywhere: an open WPF menu lists its
++/// items under the menu item while each item's parent is the popup's scroll
++/// viewer. Nothing cheap proves the agreement per item, so the caller that
++/// knows the window turns it on. One process reads the variable once, so the
++/// walk and the live read of one command can never disagree about it.
++pub(crate) fn menu_path_identity_enabled() -> bool {
++    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ENABLED.get_or_init(|| opts_in(std::env::var(MENU_PATH_IDENTITY_ENV).ok().as_deref()))
++}
++
++/// Only the exact value `1` opts in.
++pub(crate) fn opts_in(value: Option<&str>) -> bool {
++    value == Some("1")
++}
++
++/// The name a menu path uses for an element: a read name, `""` for a
++/// provider that has none, `None` when the read failed.
++pub(crate) fn path_name(properties: &ElementProperties) -> Option<String> {
++    match properties.get(TreeProperty::Name) {
++        PropertyOutcome::Known(PropertyValue::Text(name)) => Some(name),
++        PropertyOutcome::Absent => Some(String::new()),
++        PropertyOutcome::Known(_) | PropertyOutcome::Unknown => None,
++    }
++}
++
++/// Stamps the menu path on an unidentified menu item by climbing live. The
++/// single-element live read uses this; the tree walk supplies the same path
++/// from the ancestors it already read (`walk::menu_trail`) and only falls
++/// back here for a node whose parent it never visited.
++pub(crate) fn scope_menu_item_live(
++    element: &UIAElement,
++    properties: &mut ElementProperties,
++    deadline: Option<Deadline>,
++) {
++    if !menu_path_identity_enabled() || !properties.is_unidentified_menu_item() {
++        return;
++    }
++    let path = path_name(properties)
++        .and_then(|own| live_menu_path(element, &own, deadline))
++        .map(|(path, _)| path);
++    properties.set_menu_path(match path {
++        Some(path) => PropertyOutcome::Known(PropertyValue::Text(path)),
++        None => PropertyOutcome::Unknown,
++    });
++}
++
++/// The reads a menu path needs, so the deadline discipline is tested with
++/// counted fakes. Each read is one cross-process call; `None` is a failure.
++pub(crate) struct MenuReads<'a, N> {
++    pub(crate) parent: &'a dyn Fn(&N) -> Option<N>,
++    pub(crate) is_menu_item: &'a dyn Fn(&N) -> Option<bool>,
++    pub(crate) name: &'a dyn Fn(&N) -> Option<String>,
++    pub(crate) expired: &'a dyn Fn() -> bool,
++}
++
++impl<N> MenuReads<'_, N> {
++    fn read<T>(&self, call: impl FnOnce() -> Option<T>) -> Option<T> {
++        if (self.expired)() {
++            return None;
++        }
++        let value = call()?;
++        (!(self.expired)()).then_some(value)
++    }
++}
++
++/// A node's menu-path contribution: `Some(None)` for a read non-menu type,
++/// `Some(Some(name))` for a menu item, `None` when a read failed or the
++/// budget ran out before or after any read. No read starts after expiry.
++pub(crate) fn read_menu_node<N>(node: &N, reads: &MenuReads<'_, N>) -> Option<Option<String>> {
++    if !reads.read(|| (reads.is_menu_item)(node))? {
++        return Some(None);
++    }
++    reads.read(|| (reads.name)(node)).map(Some)
++}
++
++/// Climbs while the parent is a MenuItem, collecting names; the first parent
++/// of a read, other type ends the path. Returns the path and how many names
++/// it holds. `None` when any read fails, the budget runs out before or after
++/// a read, or the path would hold more than `MAX_MENU_DEPTH` names.
++pub(crate) fn climb_menu_path<N>(
++    start: N,
++    own: &str,
++    reads: &MenuReads<'_, N>,
++) -> Option<(String, usize)> {
++    let mut innermost_first = vec![own.to_owned()];
++    let mut current = start;
++    loop {
++        let parent = reads.read(|| (reads.parent)(&current))?;
++        if !reads.read(|| (reads.is_menu_item)(&parent))? {
++            let names = innermost_first.len();
++            return Some((join_path(innermost_first), names));
++        }
++        if innermost_first.len() == MAX_MENU_DEPTH {
++            return None;
++        }
++        innermost_first.push(reads.read(|| (reads.name)(&parent))?);
++        current = parent;
++    }
++}
++
++/// The live climb over the raw view; nothing is prepared after expiry.
++pub(crate) fn live_menu_path(
++    element: &UIAElement,
++    own: &str,
++    deadline: Option<Deadline>,
++) -> Option<(String, usize)> {
++    let expired = || deadline.is_some_and(|deadline| deadline.is_expired());
++    if expired() {
++        return None;
++    }
++    let client = crate::tree::automation::automation_client().ok()?;
++    let walker = client.get_raw_view_walker().ok()?;
++    let reads = MenuReads {
++        parent: &|node: &uiautomation::UIElement| walker.get_parent(node).ok(),
++        is_menu_item: &is_menu_item,
++        name: &|node: &uiautomation::UIElement| node.get_name().ok(),
++        expired: &expired,
++    };
++    climb_menu_path(element.0.clone(), own, &reads)
++}
++
++/// One `ControlType` read; `None` when it failed.
++pub(crate) fn is_menu_item(node: &uiautomation::UIElement) -> Option<bool> {
++    node.get_control_type()
++        .ok()
++        .map(|kind| kind == ControlType::MenuItem)
++}
++
++/// `prefix/name` with the name escaped; `prefix` is an already-escaped path.
++pub(crate) fn extend(prefix: Option<&str>, name: &str) -> String {
++    match prefix {
++        Some(prefix) => format!("{prefix}/{}", escape_id(name)),
++        None => escape_id(name),
++    }
++}
++
++/// Outermost menu first, own name last.
++pub(crate) fn join_path(mut innermost_first: Vec<String>) -> String {
++    innermost_first.reverse();
++    innermost_first
++        .iter()
++        .fold(None, |path: Option<String>, name| {
++            Some(extend(path.as_deref(), name))
++        })
++        .unwrap_or_default()
++}
+diff --git a/crates/windows/src/tree/properties/menu_path_tests.rs b/crates/windows/src/tree/properties/menu_path_tests.rs
+new file mode 100644
+index 00000000..c20f2a26
+--- /dev/null
++++ b/crates/windows/src/tree/properties/menu_path_tests.rs
+@@ -0,0 +1,210 @@
++use super::*;
++
++fn menu_item(automation_id: PropertyOutcome) -> ElementProperties {
++    ElementProperties::from_reads(vec![
++        (
++            TreeProperty::ControlType,
++            PropertyOutcome::Known(PropertyValue::Number(50011)),
++        ),
++        (TreeProperty::AutomationId, automation_id),
++    ])
++}
++
++fn text(value: &str) -> PropertyOutcome {
++    PropertyOutcome::Known(PropertyValue::Text(value.into()))
++}
++
++/// VaderAI patch: a menu item without an AutomationId is identified by its
++/// menu path under its own kind, so same-named items in different menus are
++/// not twins; a failed path read makes the identifier unknown, never absent.
++#[test]
++fn an_unidentified_menu_item_is_identified_by_its_menu_path() {
++    for blank in [text(" "), PropertyOutcome::Absent] {
++        let mut item = menu_item(blank);
++        assert!(item.is_unidentified_menu_item());
++        item.set_menu_path(text("Admin/Query"));
++        let identifier = item.identifier_evidence().preferred_identifier().cloned();
++        assert_eq!(
++            identifier.map(|identifier| (identifier.kind, identifier.value)),
++            Some((IdentifierKind::MenuPath, "Admin/Query".into()))
++        );
++    }
++    let mut other = menu_item(PropertyOutcome::Absent);
++    other.set_menu_path(text("Billing/Query"));
++    let mut same_name = menu_item(PropertyOutcome::Absent);
++    same_name.set_menu_path(text("Admin/Query"));
++    assert_ne!(
++        other.identifier_evidence().identifiers(),
++        same_name.identifier_evidence().identifiers()
++    );
++}
++
++#[test]
++fn a_failed_menu_path_read_is_unknown_and_an_unread_one_is_absent() {
++    for failed in [PropertyOutcome::Unknown, PropertyOutcome::Absent] {
++        let mut item = menu_item(PropertyOutcome::Absent);
++        item.set_menu_path(failed);
++        let evidence = item.identifier_evidence();
++        assert!(!evidence.is_complete());
++        assert!(evidence.identifiers().is_empty());
++    }
++    let unread = menu_item(PropertyOutcome::Absent).identifier_evidence();
++    assert!(unread.is_complete() && unread.identifiers().is_empty());
++}
++
++#[test]
++fn a_menu_item_with_its_own_id_or_an_unread_id_is_left_alone() {
++    assert!(!menu_item(text("Item 5")).is_unidentified_menu_item());
++    assert!(!menu_item(PropertyOutcome::Unknown).is_unidentified_menu_item());
++    let mut identified = menu_item(text("Item 5"));
++    identified.set_menu_path(text("Admin/Query"));
++    assert_eq!(
++        identified.identifier_evidence().preferred_value(),
++        Some("Item 5")
++    );
++    let button = ElementProperties::from_reads(vec![(
++        TreeProperty::ControlType,
++        PropertyOutcome::Known(PropertyValue::Number(50000)),
++    )]);
++    assert!(!button.is_unidentified_menu_item());
++}
++
++#[cfg(target_os = "windows")]
++#[test]
++fn the_path_runs_outermost_first_and_escapes_its_separators() {
++    use crate::tree::properties::identity_scope::join_path;
++
++    assert_eq!(
++        join_path(vec!["Query".into(), "Sub".into(), "Admin".into()]),
++        "Admin/Sub/Query"
++    );
++    assert_ne!(
++        join_path(vec!["c".into(), "a/b".into()]),
++        join_path(vec!["b/c".into(), "a".into()])
++    );
++    assert_eq!(join_path(vec![r"x\".into(), "p".into()]), r"p/x\\");
++    assert_eq!(join_path(vec!["Top".into()]), "Top");
++}
++
++#[cfg(target_os = "windows")]
++mod deadline {
++    use crate::tree::properties::identity_scope::{
++        MAX_MENU_DEPTH, MenuReads, climb_menu_path, read_menu_node,
++    };
++    use std::cell::Cell;
++
++    /// Nodes `0..=len`: each is the parent of the one before, and `len` is a
++    /// non-menu root. Every read counts one call and may spend the budget.
++    struct Chain {
++        len: usize,
++        calls: Cell<usize>,
++        expire_after: Cell<Option<usize>>,
++    }
++
++    impl Chain {
++        fn new(len: usize, expire_after: Option<usize>) -> Self {
++            Self {
++                len,
++                calls: Cell::new(0),
++                expire_after: Cell::new(expire_after),
++            }
++        }
++
++        fn call(&self) {
++            self.calls.set(self.calls.get() + 1);
++        }
++
++        fn expired(&self) -> bool {
++            self.expire_after
++                .get()
++                .is_some_and(|after| self.calls.get() >= after)
++        }
++    }
++
++    fn climb(chain: &Chain) -> Option<(String, usize)> {
++        let reads = MenuReads {
++            parent: &|node: &usize| {
++                chain.call();
++                Some(node + 1)
++            },
++            is_menu_item: &|node: &usize| {
++                chain.call();
++                Some(*node < chain.len)
++            },
++            name: &|node: &usize| {
++                chain.call();
++                Some(format!("m{node}"))
++            },
++            expired: &|| chain.expired(),
++        };
++        climb_menu_path(0, "own", &reads)
++    }
++
++    #[test]
++    fn a_climb_reads_three_calls_per_menu_level_and_stops_at_the_root() {
++        let chain = Chain::new(3, None);
++        assert_eq!(climb(&chain), Some(("m2/m1/own".into(), 3)));
++        assert_eq!(chain.calls.get(), 2 * 3 + 2);
++    }
++
++    /// codex1 P2: a read that returns after spending the budget starts no
++    /// further read, and an already spent budget starts none at all.
++    #[test]
++    fn no_read_starts_after_a_read_spends_the_budget() {
++        for spent_at in 1..=8 {
++            let chain = Chain::new(3, Some(spent_at));
++            assert_eq!(climb(&chain), None, "spent after call {spent_at}");
++            assert_eq!(chain.calls.get(), spent_at, "spent after call {spent_at}");
++        }
++        let already = Chain::new(3, Some(0));
++        assert_eq!(climb(&already), None);
++        assert_eq!(already.calls.get(), 0);
++    }
++
++    #[test]
++    fn a_chain_past_the_depth_limit_stops_before_reading_another_name() {
++        let chain = Chain::new(MAX_MENU_DEPTH + 2, None);
++        assert_eq!(climb(&chain), None);
++        assert_eq!(chain.calls.get(), (MAX_MENU_DEPTH - 1) * 3 + 2);
++    }
++
++    #[test]
++    fn a_node_read_spends_no_name_call_after_its_type_spends_the_budget() {
++        let chain = Chain::new(3, Some(1));
++        let reads = MenuReads {
++            parent: &|_: &usize| None,
++            is_menu_item: &|_: &usize| {
++                chain.call();
++                Some(true)
++            },
++            name: &|_: &usize| {
++                chain.call();
++                Some("x".into())
++            },
++            expired: &|| chain.expired(),
++        };
++        assert_eq!(read_menu_node(&0, &reads), None);
++        assert_eq!(chain.calls.get(), 1);
++        chain.expire_after.set(None);
++        assert_eq!(read_menu_node(&0, &reads), Some(Some("x".into())));
++        assert_eq!(chain.calls.get(), 3);
++    }
++}
++
++#[cfg(target_os = "windows")]
++#[test]
++fn only_the_exact_value_one_opts_in_to_menu_path_identity() {
++    use crate::tree::properties::identity_scope::opts_in;
++
++    assert!(opts_in(Some("1")));
++    for off in [
++        None,
++        Some(""),
++        Some("0"),
++        Some("true"),
++        Some(" 1"),
++        Some("11"),
++    ] {
++        assert!(!opts_in(off), "{off:?}");
++    }
++}
+diff --git a/crates/windows/src/tree/properties/mod.rs b/crates/windows/src/tree/properties/mod.rs
+index 181e11fd..9bd71573 100644
+--- a/crates/windows/src/tree/properties/mod.rs
++++ b/crates/windows/src/tree/properties/mod.rs
+@@ -262,7 +262,19 @@ mod imp {
+                 }
+             }
+         }
+-        (ElementProperties::from_reads(reads), errors)
++        let mut properties = ElementProperties::from_reads(reads);
++        if properties.is_identified_edit() {
++            let parent = if deadline.is_some_and(|deadline| deadline.is_expired()) {
++                if let Some(deadline) = deadline.filter(|_| !truncated) {
++                    errors.push(deadline.timeout_error());
++                }
++                PropertyOutcome::Unknown
++            } else {
++                super::identity_scope::parent_automation_id(element)
++            };
++            properties.set_parent_automation_id(parent);
++        }
++        (properties, errors)
+     }
+ 
+     /// Converts a UI Automation rectangle into core's.
+@@ -344,6 +356,8 @@ pub use imp::{read_cached, read_live, read_live_bounded, read_one};
+ pub(crate) use imp::rect_from_uia;
+ 
+ pub mod element_properties;
++#[cfg(target_os = "windows")]
++pub(crate) mod identity_scope;
+ pub mod property_ids;
+ pub mod property_outcome;
+ #[cfg(test)]
+diff --git a/crates/windows/src/tree/resolve/resolve_anchor.rs b/crates/windows/src/tree/resolve/resolve_anchor.rs
+index 25721f90..438e6680 100644
+--- a/crates/windows/src/tree/resolve/resolve_anchor.rs
++++ b/crates/windows/src/tree/resolve/resolve_anchor.rs
+@@ -75,7 +75,7 @@ fn resolve_locator_anchor_once(
+     }
+ 
+     let root = crate::tree::resolve::resolve_window_root(entry, deadline)?;
+-    let source = UiaTreeSource::for_root(&root)?;
++    let source = UiaTreeSource::for_root(&root)?.bound_to(deadline);
+     let prepared = source.prepare_root(&root)?;
+     let budget = resolve_walk_budget(deadline);
+ 
+diff --git a/crates/windows/src/tree/walk/menu_trail.rs b/crates/windows/src/tree/walk/menu_trail.rs
+new file mode 100644
+index 00000000..f0083e3c
+--- /dev/null
++++ b/crates/windows/src/tree/walk/menu_trail.rs
+@@ -0,0 +1,203 @@
++//! VaderAI patch: menu paths for the tree walk, from ancestors the walk has
++//! already read.
++//!
++//! A menu item without an AutomationId is identified by its menu path
++//! (`properties::identity_scope`). Climbing live for every item costs several
++//! cross-process calls each into a slow provider: a 571-item WinForms menu
++//! took 18.4s to snapshot instead of 9.1s, and its items report empty runtime
++//! ids, so nothing keys a cache of climbs. The walk already reads every
++//! ancestor on its way down, so the trail remembers, per element the source
++//! hands out, what its parent contributes to a path.
++//!
++//! The path is a name-based identity, not a provider id: renaming a menu
++//! makes its items stale, and an item that takes over another's whole path
++//! takes over its identity. Two items with one path are twins and refuse.
++//!
++//! Elements are keyed by COM pointer, and every keyed element is kept alive
++//! by the trail so an address is never reused for another element while the
++//! trail lives. The same UI element reached through two wrappers is two keys;
++//! that only costs a live read, never a wrong path. An element the trail
++//! never saw climbs live instead of guessing.
++
++use std::collections::HashMap;
++
++use crate::tree::properties::ElementProperties;
++use crate::tree::properties::identity_scope::{MAX_MENU_DEPTH, extend, path_name};
++use crate::tree::properties::property_ids::TreeProperty;
++use crate::tree::properties::{PropertyOutcome, PropertyValue};
++
++/// What a node contributes to the menu paths of its children.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub(crate) enum Above {
++    /// A node of a read, non-menu control type: a child's path starts at it.
++    NotMenu,
++    /// A menu item with this escaped path of this many names.
++    Path(String, usize),
++    /// A node whose type, name or own path could not be read: nothing under
++    /// it gets a path.
++    Failed,
++}
++
++/// A node's control type as a menu path reads it.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum NodeKind {
++    MenuItem,
++    Other,
++    Unread,
++}
++
++impl NodeKind {
++    pub(crate) fn of(properties: &ElementProperties) -> Self {
++        match properties.get(TreeProperty::ControlType) {
++            PropertyOutcome::Known(PropertyValue::Number(50011)) => Self::MenuItem,
++            PropertyOutcome::Known(PropertyValue::Number(_)) => Self::Other,
++            PropertyOutcome::Known(_) | PropertyOutcome::Absent | PropertyOutcome::Unknown => {
++                Self::Unread
++            }
++        }
++    }
++}
++
++/// The path of a menu item named `name` under `parent`; `None` is unknown,
++/// including a path longer than the live climb would accept.
++pub(crate) fn path_under(parent: &Above, name: Option<&str>) -> Option<(String, usize)> {
++    let (path, names) = match (parent, name) {
++        (Above::NotMenu, Some(name)) => (extend(None, name), 1),
++        (Above::Path(prefix, names), Some(name)) => (extend(Some(prefix), name), names + 1),
++        (Above::Failed, _) | (_, None) => return None,
++    };
++    (names <= MAX_MENU_DEPTH).then_some((path, names))
++}
++
++/// What a node passes down, given what its own parent passed to it.
++pub(crate) fn passes_down(parent: &Above, kind: NodeKind, name: Option<&str>) -> Above {
++    match kind {
++        NodeKind::Other => Above::NotMenu,
++        NodeKind::Unread => Above::Failed,
++        NodeKind::MenuItem => {
++            path_under(parent, name).map_or(Above::Failed, |(path, names)| Above::Path(path, names))
++        }
++    }
++}
++
++#[cfg(target_os = "windows")]
++pub(crate) use imp::MenuTrail;
++
++#[cfg(target_os = "windows")]
++mod imp {
++    use super::{Above, ElementProperties, HashMap, NodeKind, PropertyOutcome, PropertyValue};
++    use super::{passes_down, path_name, path_under};
++    use crate::tree::element::UIAElement;
++    use crate::tree::properties::identity_scope::{
++        MenuReads, is_menu_item, live_menu_path, menu_path_identity_enabled, read_menu_node,
++        scope_menu_item_live,
++    };
++    use agent_desktop_core::Deadline;
++    use windows::Win32::UI::Accessibility::IUIAutomationElement;
++    use windows::core::Interface;
++
++    #[derive(Default)]
++    pub(crate) struct MenuTrail {
++        /// Every element the source handed out or descended from, kept alive.
++        nodes: HashMap<usize, uiautomation::UIElement>,
++        /// The element each handed-out element was last reached under.
++        parent_of: HashMap<usize, usize>,
++        /// What each node passes down to its children, once known.
++        own: HashMap<usize, Above>,
++        /// The observation's deadline; every live read checks it first.
++        deadline: Option<Deadline>,
++    }
++
++    fn key(node: &uiautomation::UIElement) -> usize {
++        let element: &IUIAutomationElement = node.as_ref();
++        element.as_raw() as usize
++    }
++
++    impl MenuTrail {
++        pub(crate) fn bind(&mut self, deadline: Deadline) {
++            self.deadline = Some(deadline);
++        }
++
++        fn keep(&mut self, node: &UIAElement) -> usize {
++            let key = key(&node.0);
++            self.nodes.entry(key).or_insert_with(|| node.0.clone());
++            key
++        }
++
++        pub(crate) fn note_first_child(&mut self, parent: &UIAElement, child: &UIAElement) {
++            let (parent, child) = (self.keep(parent), self.keep(child));
++            self.parent_of.insert(child, parent);
++        }
++
++        pub(crate) fn note_next_sibling(&mut self, node: &UIAElement, sibling: &UIAElement) {
++            if let Some(parent) = self.parent_of.get(&key(&node.0)).copied() {
++                let sibling = self.keep(sibling);
++                self.parent_of.insert(sibling, parent);
++            }
++        }
++
++        /// Stamps the node's menu path if it needs one, and records what the
++        /// node passes down. A node the source did not reach by navigation
++        /// has no known parent and climbs live.
++        pub(crate) fn scope(&mut self, node: &UIAElement, properties: &mut ElementProperties) {
++            if !menu_path_identity_enabled() {
++                return;
++            }
++            let node_key = self.keep(node);
++            let Some(parent) = self.parent_of.get(&node_key).copied() else {
++                scope_menu_item_live(node, properties, self.deadline);
++                return;
++            };
++            let parent = self.passed_down_by(parent);
++            let name = path_name(properties);
++            if properties.is_unidentified_menu_item() {
++                properties.set_menu_path(match path_under(&parent, name.as_deref()) {
++                    Some((path, _)) => PropertyOutcome::Known(PropertyValue::Text(path)),
++                    None => PropertyOutcome::Unknown,
++                });
++            }
++            let down = passes_down(&parent, NodeKind::of(properties), name.as_deref());
++            self.own.insert(node_key, down);
++        }
++
++        /// What a kept node passes down. A node whose evidence the walk never
++        /// read (a path descent steps over it) is read live once, and the
++        /// answer serves all its children.
++        fn passed_down_by(&mut self, node_key: usize) -> Above {
++            if let Some(known) = self.own.get(&node_key) {
++                return known.clone();
++            }
++            let state = self.read_passed_down(node_key).unwrap_or(Above::Failed);
++            self.own.insert(node_key, state.clone());
++            state
++        }
++
++        fn read_passed_down(&mut self, node_key: usize) -> Option<Above> {
++            let node = self.nodes.get(&node_key)?.clone();
++            let deadline = self.deadline;
++            let expired = || deadline.is_some_and(|deadline| deadline.is_expired());
++            let reads = MenuReads {
++                parent: &|_: &uiautomation::UIElement| None,
++                is_menu_item: &is_menu_item,
++                name: &|node: &uiautomation::UIElement| node.get_name().ok(),
++                expired: &expired,
++            };
++            let Some(name) = read_menu_node(&node, &reads)? else {
++                return Some(Above::NotMenu);
++            };
++            Some(match self.parent_of.get(&node_key).copied() {
++                Some(parent) => passes_down(
++                    &self.passed_down_by(parent),
++                    NodeKind::MenuItem,
++                    Some(&name),
++                ),
++                None => live_menu_path(&UIAElement::from(node), &name, self.deadline)
++                    .map_or(Above::Failed, |(path, names)| Above::Path(path, names)),
++            })
++        }
++    }
++}
++
++#[cfg(test)]
++#[path = "menu_trail_tests.rs"]
++mod tests;
+diff --git a/crates/windows/src/tree/walk/menu_trail_tests.rs b/crates/windows/src/tree/walk/menu_trail_tests.rs
+new file mode 100644
+index 00000000..7d7eac4e
+--- /dev/null
++++ b/crates/windows/src/tree/walk/menu_trail_tests.rs
+@@ -0,0 +1,68 @@
++use super::{Above, NodeKind, passes_down, path_under};
++use crate::tree::properties::identity_scope::MAX_MENU_DEPTH;
++
++fn menu(parent: &Above, name: &str) -> Above {
++    passes_down(parent, NodeKind::MenuItem, Some(name))
++}
++
++#[test]
++fn a_path_grows_one_escaped_name_per_menu_level() {
++    let top = menu(&Above::NotMenu, "Admin");
++    assert_eq!(top, Above::Path("Admin".into(), 1));
++    let sub = menu(&top, "a/b");
++    assert_eq!(sub, Above::Path(r"Admin/a\/b".into(), 2));
++    assert_eq!(
++        path_under(&sub, Some("Query")),
++        Some((r"Admin/a\/b/Query".into(), 3))
++    );
++    assert_eq!(
++        path_under(&Above::NotMenu, Some("")),
++        Some((String::new(), 1))
++    );
++}
++
++#[test]
++fn only_a_read_non_menu_type_restarts_the_path_below_it() {
++    let top = menu(&Above::NotMenu, "Admin");
++    assert_eq!(
++        passes_down(&top, NodeKind::Other, Some("Pane")),
++        Above::NotMenu
++    );
++}
++
++/// codex1 P1: a parent whose control type could not be read must not pass
++/// `NotMenu` down, or `Admin/Query` would shorten to a whole `Query` that can
++/// equal a different top-level `Query`.
++#[test]
++fn an_unread_parent_type_fails_everything_under_it_instead_of_shortening() {
++    let top = menu(&Above::NotMenu, "Admin");
++    let unread = passes_down(&top, NodeKind::Unread, Some("Sub"));
++    assert_eq!(unread, Above::Failed);
++    assert_eq!(path_under(&unread, Some("Query")), None);
++    assert_ne!(
++        path_under(&unread, Some("Query")),
++        path_under(&Above::NotMenu, Some("Query"))
++    );
++    assert_eq!(menu(&unread, "Deeper"), Above::Failed);
++}
++
++#[test]
++fn an_unread_name_fails_the_item_and_everything_under_it() {
++    let top = passes_down(&Above::NotMenu, NodeKind::MenuItem, None);
++    assert_eq!(top, Above::Failed);
++    assert_eq!(path_under(&top, Some("Query")), None);
++    assert_eq!(menu(&top, "Sub"), Above::Failed);
++    assert_eq!(path_under(&Above::NotMenu, None), None);
++}
++
++/// The walk accepts exactly the depths the live climb accepts.
++#[test]
++fn a_path_longer_than_the_live_climb_accepts_is_unknown() {
++    let mut level = Above::NotMenu;
++    for index in 0..MAX_MENU_DEPTH {
++        level = menu(&level, &format!("m{index}"));
++        assert!(matches!(level, Above::Path(_, names) if names == index + 1));
++    }
++    assert_eq!(path_under(&level, Some("too deep")), None);
++    assert_eq!(menu(&level, "too deep"), Above::Failed);
++}
+diff --git a/crates/windows/src/tree/walk/mod.rs b/crates/windows/src/tree/walk/mod.rs
+index 5c95dc66..26fac94d 100644
+--- a/crates/windows/src/tree/walk/mod.rs
++++ b/crates/windows/src/tree/walk/mod.rs
+@@ -1,4 +1,6 @@
+ pub(crate) mod cache;
++#[cfg(target_os = "windows")]
++pub(crate) mod menu_trail;
+ pub mod walker;
+ pub(crate) mod walker_enumerate;
+ #[cfg(test)]
+diff --git a/crates/windows/src/tree/walk/walker_source.rs b/crates/windows/src/tree/walk/walker_source.rs
+index 9feff850..efe76f52 100644
+--- a/crates/windows/src/tree/walk/walker_source.rs
++++ b/crates/windows/src/tree/walk/walker_source.rs
+@@ -163,6 +163,7 @@ mod imp {
+         /// emptiness test would otherwise skip the anonymous `Group`/`Pane`
+         /// containers native stacks are full of.
+         chromium_provenance: bool,
++        menu_trail: std::cell::RefCell<crate::tree::walk::menu_trail::MenuTrail>,
+     }
+ 
+     impl UiaTreeSource {
+@@ -181,9 +182,17 @@ mod imp {
+                 walker,
+                 cache,
+                 chromium_provenance: crate::tree::chromium::is_chromium_root(root),
++                menu_trail: Default::default(),
+             })
+         }
+ 
++        /// Binds the menu-path trail's live fallback reads to the deadline
++        /// of the observation this source serves.
++        pub fn bound_to(self, deadline: agent_desktop_core::Deadline) -> Self {
++            self.menu_trail.borrow_mut().bind(deadline);
++            self
++        }
++
+         /// Prefetches the walk property set onto the caller's root.
+         ///
+         /// The root arrives from `ElementFromHandle` or from a stored ref, so
+@@ -214,21 +223,27 @@ mod imp {
+         type Node = UIAElement;
+ 
+         fn first_child(&self, node: &UIAElement) -> Result<UIAElement, UiaFailure> {
+-            match &self.cache {
++            let child = match &self.cache {
+                 Some(request) => self.walker.get_first_child_build_cache(&node.0, request),
+                 None => self.walker.get_first_child(&node.0),
+             }
+             .map(UIAElement::from)
+-            .map_err(|error| failure_of(&error))
++            .map_err(|error| failure_of(&error))?;
++            self.menu_trail.borrow_mut().note_first_child(node, &child);
++            Ok(child)
+         }
+ 
+         fn next_sibling(&self, node: &UIAElement) -> Result<UIAElement, UiaFailure> {
+-            match &self.cache {
++            let sibling = match &self.cache {
+                 Some(request) => self.walker.get_next_sibling_build_cache(&node.0, request),
+                 None => self.walker.get_next_sibling(&node.0),
+             }
+             .map(UIAElement::from)
+-            .map_err(|error| failure_of(&error))
++            .map_err(|error| failure_of(&error))?;
++            self.menu_trail
++                .borrow_mut()
++                .note_next_sibling(node, &sibling);
++            Ok(sibling)
+         }
+ 
+         fn identity(&self, node: &UIAElement) -> NodeKey {
+@@ -247,10 +262,11 @@ mod imp {
+             agent_desktop_core::LocatorEvidence,
+             u64,
+         ) {
+-            let (properties, errors) = match &self.cache {
++            let (mut properties, errors) = match &self.cache {
+                 Some(_) => read_cached(node),
+                 None => read_live(node),
+             };
++            self.menu_trail.borrow_mut().scope(node, &mut properties);
+             let failed = u64::try_from(errors.len()).unwrap_or(u64::MAX);
+             let label = read_label(node, self.cache.is_some());
+             let vocabulary = walk_vocabulary(&properties, &label);
+@@ -286,6 +302,10 @@ mod imp {
+     pub struct UiaTreeSource;
+ 
+     impl UiaTreeSource {
++        pub fn bound_to(self, _deadline: agent_desktop_core::Deadline) -> Self {
++            self
++        }
++
+         pub fn for_root(_root: &UIAElement) -> Result<Self, AdapterError> {
+             Ok(Self)
+         }
+@@ -357,7 +377,7 @@ pub fn walk_uia_subtree(
+     root_source: &ObservationRoot<'_>,
+     budget: WalkBudget,
+ ) -> Result<WalkOutcome, AdapterError> {
+-    let source = UiaTreeSource::for_root(root)?;
++    let source = UiaTreeSource::for_root(root)?.bound_to(budget.deadline);
+     let prepared = source.prepare_root(root)?;
+     walk_from_root(&source, &prepared, root_source, budget)
+ }

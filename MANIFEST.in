@@ -1,0 +1,5 @@
+prune tests
+prune rune-packages
+prune tools
+prune wiki
+global-exclude __pycache__ *.py[cod]

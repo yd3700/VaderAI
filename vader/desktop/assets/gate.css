@@ -1,0 +1,20 @@
+/* 문 — 로그인·PIN. 업무 화면(index.html)과 따로 떠서, 잠기면 업무 DOM 이 통째로 사라진다 (2단계 2a) */
+html,body{height:100%}
+body{display:grid;grid-template-columns:minmax(0,1fr);place-items:center;padding:24px 16px;overflow:auto;background:radial-gradient(ellipse 60% 45% at 50% 38%,#f02b3a0f,transparent 70%),var(--bg)}
+.gate{width:100%;max-width:380px;margin:0;padding:0;min-height:0;overflow:visible;display:flex;flex-direction:column;align-items:stretch;text-align:center}
+.gate-brand{display:flex;align-items:center;justify-content:center;gap:12px;font-size:20px;font-weight:750;letter-spacing:.015em;margin-bottom:44px}
+.gate-brand svg{width:28px;height:28px;color:var(--red)}.gate-brand span{color:var(--red);margin-left:-12px}
+.gate h1{margin:0;font-size:24px;font-weight:600;line-height:1.35;text-wrap:balance;outline:none}
+.gate-lead{margin:12px 0 0;color:var(--muted);font-size:14px;line-height:1.6;text-wrap:pretty}
+.gate-lead:empty{display:none}
+.gate-form{display:flex;flex-direction:column;gap:14px;margin-top:32px}
+.gate-field{display:flex;flex-direction:column;gap:7px;text-align:left;font-size:12px;color:var(--muted)}
+.gate-field input{height:52px;padding:0 16px;border:1px solid var(--line);border-radius:10px;background:#11151c;color:var(--text);font-size:24px;letter-spacing:.6em;text-align:center;font-variant-numeric:tabular-nums;transition:border-color .2s,box-shadow .2s}
+.gate-field input:focus-visible{outline:none;border-color:var(--red);box-shadow:0 0 0 3px #f02b3a33}
+.gate .button{border-radius:10px;margin-top:4px}
+#gateAction{margin-top:32px}
+.gate-error{min-height:1.5em;margin:14px 0 0;color:var(--amber);font-size:13px;line-height:1.5}
+.gate-link{align-self:center;background:none;border:0;padding:8px;color:var(--muted);font-size:13px;text-decoration:underline;text-underline-offset:4px}
+.gate-link:hover{color:var(--text)}
+.gate-note{margin:28px 0 0;color:var(--muted);font-size:12px;line-height:1.6}
+.gate.busy{cursor:progress}
