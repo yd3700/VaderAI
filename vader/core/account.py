@@ -41,12 +41,21 @@ TIMEOUT_SECONDS = 20
 CALLBACK_READ_SECONDS = 5
 
 _access: dict = {}          # {"site", "token", "expires", "account"} — 메모리에만
+_generation = [0]           # 로그인 세션 세대 — 로그아웃·다른 계정으로 바뀔 때마다 올라간다 (토큰 갱신은 그대로)
 _lock = threading.Lock()
 _login = {"generation": 0, "busy": False}
 
 
 class AccountError(RuntimeError):
     status: int | None = None
+    reason: str | None = None       # 'replaced' — 다른 PC 에서 이 계정으로 로그인해 이 PC 가 끊겼다 (서버가 알려 준다)
+
+
+_ended = {"reason": None}           # 마지막으로 서버가 이 PC 로그인을 끊은 이유 — 문(gate)이 안내에 쓴다. 다시 로그인하면 지운다
+
+
+def ended_reason() -> str | None:
+    return _ended["reason"]
 
 
 def site() -> str:
@@ -166,10 +175,45 @@ def _wait_for_code(origin: str, open_browser, timeout: float) -> tuple[str, str,
     return got["code"], verifier, redirect
 
 
+def current_id() -> str | None:
+    """지금 메모리에 있는 로그인 계정 id — 통신하지 않는다. 로그아웃·토큰 전이면 None."""
+    found = _access.get("account") or {}
+    return str(found["id"]) if found.get("id") else None
+
+
+def session() -> tuple[str | None, int]:
+    """(계정 id, 세션 세대). 요청 앞뒤로 같으면 그사이 로그아웃·계정 전환이 없었다."""
+    return current_id(), _generation[0]
+
+
+ME = "/api/device/me/"
+
+
+def owner_name(origin: str) -> str:
+    return "account.device_owner." + hashlib.sha256(origin.encode()).hexdigest()[:16]
+
+
+def _owner_value(account_id: str, device_token: str) -> str:
+    return account_id + " " + hashlib.sha256(device_token.encode()).hexdigest()
+
+
+def stored_account(origin: str) -> str | None:
+    """이 PC 에 저장된 기기 토큰이 속한 계정 id (로그인·갱신 때 서버가 준 값). 오프라인 입장은 이 계정의 확인 기록만 쓴다.
+    소유자 기록에 그 토큰의 해시를 함께 두어, 지금 저장된 토큰과 맞을 때만 인정한다 — 두 저장 사이에 끊겨
+    '새 토큰 + 옛 소유자' 가 남아도 옛 계정으로 오프라인 입장하지 않는다 (codex1 회신 10)."""
+    if not secrets.available():
+        return None
+    owner, token = secrets.get(owner_name(origin), device=True), _stored(origin)
+    if not owner or not token:
+        return None
+    account_id, _, digest = owner.partition(" ")
+    return account_id if owner == _owner_value(account_id, token) and digest else None
+
+
 def account() -> dict | None:
     """로그인한 계정 {id, display_name, catalog_access}. 로그인 안 했거나 끊겼으면 None."""
     try:
-        return call("GET", "/api/device/me/")["account"]
+        return call("GET", ME)["account"]
     except AccountError as exc:
         if exc.status == 401:
             return None
@@ -178,7 +222,8 @@ def account() -> dict | None:
         raise
 
 
-def call(method: str, path: str, body: bytes | None = None, content_type: str = "application/json") -> dict:
+def call(method: str, path: str, body: bytes | None = None, content_type: str = "application/json",
+         _again: bool = True) -> dict:
     """로그인한 계정으로 우리 웹 API 를 부른다 (목록 제출·승인 등). 로그인 안 했으면 AccountError."""
     origin = site()                                 # 한 번 읽은 주소로 끝까지 (codex1 P2-5)
     token, device = _access_for(origin)
@@ -191,7 +236,14 @@ def call(method: str, path: str, body: bytes | None = None, content_type: str = 
         return _request(origin, method, path, body=body, headers=headers)
     except AccountError as exc:
         if exc.status == 401:                       # 계정 비활성·삭제 — 요청을 시작할 때의 토큰일 때만 버린다
-            _forget(origin, device)
+            if _again and (method, path) == ("GET", ME) and _stored(origin) not in (None, device):
+                # 요청 중에 새로 로그인했다 — 옛 로그인의 거절이다. 계정 확인(읽기)만 지금 로그인으로 한 번 다시 묻는다 (codex1 회신 8).
+                # 다른 업무 요청(쓰기)은 새 계정으로 다시 보내지 않는다 — 아래 _forget 은 토큰이 달라 새 로그인을 건드리지 않고 거절만 올린다 (회신 9)
+                with _lock:
+                    if _access.get("token") == token:   # 남은 접근 토큰이 옛 로그인 것이면 새 기기 토큰으로 다시 받게
+                        _access.clear()
+                return call(method, path, body, content_type, _again=False)
+            _forget(origin, device, exc.reason)
         raise
 
 
@@ -237,7 +289,7 @@ def _access_for(origin: str) -> tuple[str | None, str | None]:
             grant = _post(origin, "/api/device/refresh/", {"device_token": device})
         except AccountError as exc:
             if exc.status == 401:                   # 끊겼거나 만료 — 로그아웃 상태로
-                _forget_locked(origin, device)
+                _forget_locked(origin, device, exc.reason)
                 return None, None
             raise
         _keep(origin, grant)
@@ -251,8 +303,11 @@ def logout() -> None:
         _login["generation"] += 1
         device = _stored(origin)
         _access.clear()
+        _generation[0] += 1
+        _ended["reason"] = None                   # 사람이 직접 로그아웃 — 다른 PC 안내를 남기지 않는다
         if device:
             secrets.delete(vault_name(origin), device=True)
+        secrets.delete(owner_name(origin), device=True)
     if device:
         try:
             _post(origin, "/api/device/logout/", {"device_token": device})
@@ -264,19 +319,27 @@ def _stored(origin: str) -> str | None:
     return secrets.get(vault_name(origin), device=True) if secrets.available() else None
 
 
-def _forget(origin: str, device: str | None) -> None:
+def _forget(origin: str, device: str | None, reason: str | None = None) -> None:
     with _lock:
-        _forget_locked(origin, device)
+        _forget_locked(origin, device, reason)
 
 
-def _forget_locked(origin: str, device: str | None) -> None:
-    if device and _stored(origin) == device:        # 그사이 새로 로그인했으면 새 토큰은 지우지 않는다
-        secrets.delete(vault_name(origin), device=True)
+def _forget_locked(origin: str, device: str | None, reason: str | None = None) -> None:
+    if not device or _stored(origin) != device:
+        return                                      # 그사이 새로 로그인했다 — 늦게 온 옛 401 은 새 로그인의 토큰·메모리·이유를 건드리지 않는다 (codex1 회신 7 P2-3)
+    secrets.delete(vault_name(origin), device=True)
+    secrets.delete(owner_name(origin), device=True)
+    _ended["reason"] = reason                       # 지금 로그인을 끊은 그 응답의 이유만
     _access.clear()
+    _generation[0] += 1
 
 
 def _keep(origin: str, grant: dict) -> None:
+    _ended["reason"] = None
+    if (_access.get("account") or {}).get("id") != (grant.get("account") or {}).get("id"):
+        _generation[0] += 1
     secrets.put(vault_name(origin), grant["device_token"], device=True)   # 새 토큰부터 저장 — 옛 토큰은 이제 쓰면 도난 판정
+    secrets.put(owner_name(origin), _owner_value(str(grant["account"]["id"]), grant["device_token"]), device=True)   # 이 토큰의 계정 — 오프라인 입장 대조 (codex1 회신 9·10)
     _access.update(site=origin, token=grant["access_token"], expires=time.time() + int(grant["expires_in"]),
                    account=grant["account"])
 
@@ -307,12 +370,14 @@ def _request(origin: str, method: str, path: str, body: bytes | None = None, hea
             return json.loads(response.read())
     except urllib.error.HTTPError as exc:
         try:   # 서버가 보낸 한국어 이유 (토큰은 담기지 않는다)
-            reason = str(json.loads(exc.read()).get("message") or "")[:300]
+            answer = json.loads(exc.read())
+            reason = str(answer.get("message") or "")[:300]
+            kind = answer.get("reason") if exc.code == 401 and answer.get("reason") == "replaced" else None
         except (ValueError, OSError, AttributeError):
-            reason = ""
-        error = AccountError("다시 로그인해 주세요." if exc.code == 401
+            reason, kind = "", None
+        error = AccountError(reason if kind else "다시 로그인해 주세요." if exc.code == 401
                              else f"서버가 거절했습니다 (HTTP {exc.code}){': ' + reason if reason else ''}.")
-        error.status = exc.code
+        error.status, error.reason = exc.code, kind
         raise error from None
     except (urllib.error.URLError, TimeoutError, ValueError):
         raise AccountError("웹에 연결하지 못했습니다. 인터넷 연결을 확인해 주세요.") from None

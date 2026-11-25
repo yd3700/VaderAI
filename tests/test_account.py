@@ -212,11 +212,107 @@ def test_a_late_401_does_not_delete_a_newer_login(web):
     name = account.vault_name(fake.origin)
     original = fake.handle
 
+    first = [True]
+
     def me_then_relogin(method, path, body, headers):
-        if path == "/api/device/me/":
-            vault[name] = "tok-newer"                         # 요청 중에 다른 로그인이 끝났다
+        if path == "/api/device/me/" and first[0]:
+            first[0] = False
+            vault[name] = newer                               # 요청 중에 다른 로그인이 끝났다
             return 401, {}, {}
         return original(method, path, body, headers)
+    fake.calls.append("(another login)")                      # 가짜 서버 토큰 이름이 겹치지 않게
+    newer = fake.grant("dev-newer")["device_token"]
     fake.handle = me_then_relogin
-    assert account.account() is None
-    assert vault.get(name) == "tok-newer", "요청을 시작할 때의 토큰만 지운다"
+    assert account.account() is not None, "옛 로그인의 거절 — 새 로그인으로 다시 물어 성공한다 (codex1 회신 8)"
+    assert vault.get(name) not in (None,) and fake.tokens[vault[name]][0] == "dev-newer", "요청을 시작할 때의 토큰만 지운다"
+
+
+def test_a_login_on_another_pc_is_told_apart_from_a_plain_401(web):
+    """한 계정 한 PC (2026-11-25): 서버가 '다른 PC 로그인' 이라고 끊으면 문이 그렇게 알린다. 다시 로그인하면 지운다."""
+    from vader.core import gate
+    fake, vault = web
+    account.login(open_browser=browser(fake), timeout=10)
+    original = fake.handle
+
+    def replaced(method, path, body, headers):
+        if path == "/api/device/me/":
+            return 401, {"message": "다른 PC 에서 이 계정으로 로그인해 이 PC 는 로그아웃됐어요.", "reason": "replaced"}, {}
+        return original(method, path, body, headers)
+    fake.handle = replaced
+    assert account.account() is None and account.ended_reason() == "replaced"
+    assert gate.who() == {"state": "replaced"}
+    # 끊기기 전에 보낸 옛 요청의 늦은 일반 401 은 이유를 지우지 못한다 (codex1 회신 6 P2-4)
+    account._forget(fake.origin, "tok-of-the-cut-login", None)
+    assert account.ended_reason() == "replaced"
+    fake.handle = original
+    account.login(open_browser=browser(fake), timeout=10)
+    assert account.ended_reason() is None
+    # 일반 401(끊김·만료)은 그냥 로그인 화면
+    fake.handle = lambda m, p, b, h: (401, {}, {}) if p == "/api/device/me/" else original(m, p, b, h)
+    assert account.account() is None and account.ended_reason() is None
+    assert gate.who() == {"state": "login"}
+
+
+def test_a_late_401_for_an_old_login_keeps_the_new_login_in_memory(web):
+    """새로 로그인한 뒤 옛 요청의 401 이 와도 새 로그인의 계정·세대·종료 이유를 그대로 둔다 (codex1 회신 7 P2-3)."""
+    fake, vault = web
+    account.login(open_browser=browser(fake), timeout=10)
+    assert account.account() is not None
+    before = account.session()
+    account._forget(fake.origin, "tok-of-an-older-login", "replaced")
+    assert account.session() == before and account.ended_reason() is None
+    assert vault.get(account.vault_name(fake.origin))
+
+
+def test_an_old_logins_401_answered_after_a_relogin_asks_again_with_the_new_one(web):
+    """/me 를 묻는 사이 새로 로그인했으면 옛 거절로 문을 닫지 않는다 — 새 로그인으로 다시 물어 ok, 확인 기록도 그대로 (codex1 회신 8)."""
+    from vader.core import gate
+    fake, vault = web
+    account.login(open_browser=browser(fake), timeout=10)
+    assert gate.who()["state"] == "ok"
+    verified = [k for k in vault if k.startswith("account.verified.")]
+    name = account.vault_name(fake.origin)
+    original, first = fake.handle, [True]
+
+    def relogin_mid_request(method, path, body, headers):
+        if path == "/api/device/me/" and first[0]:
+            first[0] = False
+            fake.calls.append("(another login)")
+            vault[name] = fake.grant("dev-new")["device_token"]      # 요청 중에 새 로그인이 끝났다
+            account._access.clear()
+            return 401, {}, {}
+        return original(method, path, body, headers)
+    fake.handle = relogin_mid_request
+    assert gate.who()["state"] == "ok"
+    assert all(k in vault for k in verified), "오프라인 확인 기록을 지우지 않는다"
+
+
+def test_an_old_logins_write_is_not_resent_as_the_new_login(web):
+    """A 의 쓰기 요청 도중 B 로 다시 로그인했으면, 그 요청은 B 로 다시 보내지 않는다 — 한 번만, B 의 토큰·세대 그대로 (codex1 회신 9)."""
+    fake, vault = web
+    account.login(open_browser=browser(fake), timeout=10)
+    name = account.vault_name(fake.origin)
+    original, writes = fake.handle, []
+
+    def write_then_relogin(method, path, body, headers):
+        if path == "/api/messenger/friend/":
+            writes.append(headers.get("Authorization"))
+            fake.calls.append("(another login)")
+            vault[name] = fake.grant("dev-b")["device_token"]
+            return 401, {}, {}
+        return original(method, path, body, headers)
+    fake.handle = write_then_relogin
+    with pytest.raises(account.AccountError):
+        account.call("POST", "/api/messenger/friend/", b"{}")
+    assert len(writes) == 1
+    assert fake.tokens[vault[name]][0] == "dev-b"
+
+
+def test_a_token_saved_without_its_owner_never_picks_the_old_account_offline(web):
+    """새 토큰만 저장되고 소유자 기록은 옛 계정 것으로 남으면(두 저장 사이 중단) 소유자를 모른다 — 오프라인 입장 없이 서버 확인 (codex1 회신 10)."""
+    fake, vault = web
+    account.login(open_browser=browser(fake), timeout=10)
+    assert account.stored_account(fake.origin) == "a-1"
+    fake.calls.append("(another login)")
+    vault[account.vault_name(fake.origin)] = fake.grant("dev-b")["device_token"]   # 토큰만 바뀌고 끊겼다
+    assert account.stored_account(fake.origin) is None

@@ -247,6 +247,16 @@ def connect() -> dict:
     return {"state": "ready", "handle": status["handle"], "device": row["device"]}
 
 
+def move() -> dict:
+    """이 PC 로 메신저 옮기기 (2026-11-25 마스터 결정: 안내하고 확인받은 뒤 정리). 사람이 화면에서 확인한 뒤에만 부른다.
+
+    서버는 옛 메신저 기기가 살아 있는 로그인에 묶여 있지 않을 때만 해제한다(한 계정 한 PC 라 앞 PC 는 이미 끊겼다).
+    옛 기기의 안 받은 메시지·키는 서버에서 지워지고, 이 PC 는 새 키로 새 기기가 된다 — 친구는 안전 번호를 다시 확인한다.
+    """
+    _api("POST", "move")
+    return connect()
+
+
 def _new_device(con):
     me = _vz().Account()
     me.generate_one_time_keys(KEYS_TARGET)

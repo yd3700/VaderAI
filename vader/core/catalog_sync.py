@@ -28,7 +28,7 @@ DOWNLOAD_TIMEOUT = 60
 #: 받는 패키지의 상한 — 서명된 목록의 size 와 함께 본다 (서버 제출 상한과 같다).
 PACKAGE_LIMIT = 2 * 1024 * 1024
 
-_last = {"next": 0.0, "error": "", "access": None}
+_last = {"next": 0.0, "error": "", "access": None, "access_account": None}
 _running = threading.Lock()
 
 
@@ -57,6 +57,7 @@ def refresh() -> dict:
 
 
 def _refresh_locked() -> dict:
+    stable = True
     try:
         delegation = account.fetch_public("/api/catalog/delegation/", catalog.MAX_DOC_BYTES)
         if delegation is not None:
@@ -65,12 +66,18 @@ def _refresh_locked() -> dict:
         if snapshot is not None:
             catalog.accept_snapshot(snapshot)
         error = "" if delegation is not None and snapshot is not None else "광장 목록이 아직 공개되지 않았습니다."
-        _last["access"] = _access()
+        before = account.session()
+        found = _access()
+        # 어느 계정으로 받은 목록인지 한 쌍으로. 받는 사이 로그아웃·계정 전환이 있었으면 버린다 (codex1 2026-11-25)
+        stable = account.session() == before
+        _last.update(access=found if stable else None, access_account=before[0] if stable else None)
     except (account.AccountError, catalog.CatalogError) as exc:
         error = str(exc)
     except Exception:  # noqa: BLE001 — 화면 폴링에서 부른다. 예외를 밖으로 내지 않는다
         error = "목록 정보를 받는 중 문제가 생겼습니다. 잠시 뒤 다시 시도합니다."
-    _last.update(error=error, next=time.time() + (RETRY_SECONDS if error else REFRESH_SECONDS))
+    # 세션이 바뀌어 접근 목록을 버렸으면 곧 다시 — 6시간 기다리면 받을 수 있는 룬에도 [업데이트] 가 없다 (codex1 회신 4)
+    soon = error or not stable
+    _last.update(error=error, next=time.time() + (RETRY_SECONDS if soon else REFRESH_SECONDS))
     return {"ok": not error, "error": error}
 
 
@@ -85,6 +92,14 @@ def _access() -> set | None:
         return set(found.get("runes") or [])
     except Exception:  # noqa: BLE001 — 로그인 전·오프라인. 숨길지 모를 때는 숨기지 않는다
         return None
+
+
+def confirmed_access() -> set | None:
+    """지금 로그인한 계정으로 확인된 접근 목록. 모르거나 다른 계정 것이면 None — 내 룬 [업데이트] 는 이때 띄우지 않는다."""
+    me = account.current_id()
+    if me is None or _last["access"] is None or _last["access_account"] != me:
+        return None
+    return _last["access"]
 
 
 def shares() -> dict:
@@ -148,12 +163,15 @@ def listing() -> dict:
             state = "update" if catalog._version(r["version"]) > catalog._version(installed) else "newer"
         releases.append({"rune_id": r["rune_id"], "version": r["version"], "name": str(r.get("name") or r["rune_id"]),
                          "summary": str(r.get("summary") or ""), "installed": installed, "state": state,
+                         "archive_sha256": r["archive_sha256"],   # 사람이 확인한 바로 그 패키지인지 설치 직전에 대조
                          "permissions": r["permissions"], "permission_text": permissions.describe(r["permissions"])})
     return {"enabled": True, "fresh": snapshot is not None, "releases": releases, "error": _last["error"]}
 
 
-def install(rune_id: str, version: str, rune_dir: Path | None = None):
-    """허용된 계정으로 패키지를 받아 서명·목록·파일을 모두 확인한 뒤 설치한다."""
+def install(rune_id: str, version: str, rune_dir: Path | None = None, archive_sha256: str | None = None):
+    """허용된 계정으로 패키지를 받아 서명·목록·파일을 모두 확인한 뒤 설치한다.
+
+    `archive_sha256` — 확인 창에서 사람이 본 패키지. 그사이 목록이 바뀌었으면(재발행·회수) 받지 않고 다시 고르게 한다."""
     if not enabled():
         raise SyncError("이 설치본에는 광장 받기가 켜져 있지 않습니다.")
     quoted = "/".join(urllib.parse.quote(part, safe="") for part in (rune_id, version))
@@ -168,6 +186,8 @@ def install(rune_id: str, version: str, rune_dir: Path | None = None):
         _doc, _release, listed = catalog.check_release(document, expect=(rune_id, version))
     except catalog.CatalogError as exc:
         raise SyncError(str(exc)) from None
+    if archive_sha256 is not None and listed["archive_sha256"] != archive_sha256:
+        raise SyncError("광장 목록이 그사이 바뀌었어요. 다시 확인하고 골라 주세요.")
     size = int(listed["size"])                     # 서명된 목록의 크기 — 서버 응답을 믿지 않는다
     if not 0 < size <= PACKAGE_LIMIT:
         raise SyncError("패키지 크기가 받을 수 있는 범위를 넘습니다.")

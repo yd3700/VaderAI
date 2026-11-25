@@ -163,8 +163,9 @@ function row(f){
 function gateNote(){
  const p=el('div','chat-gate msg-gate');
  p.append(el('span',null,{not_joined:'메신저를 쓰려면 웹 계정 화면에서 만 14세 이상 확인 후 @아이디를 정해 주세요. 정한 뒤 아래 \'다시 확인\' 을 누르세요.',
-  other_pc:'다른 PC 에서 이 계정의 메신저를 쓰고 있어요. 이 PC 에서 쓰려면 웹 계정 화면에서 그 PC 의 메신저를 해제해 주세요.',
+  other_pc:'다른 PC 에서 이 계정의 메신저를 쓰고 있었어요. 이 PC 로 옮기면 그 PC 의 지난 대화는 이 PC 로 오지 않고, 아직 받지 못한 메시지는 사라져요. 친구들은 안전 번호를 다시 확인해야 해요.',
   off:(ms.error?ms.error+' ':'')+'로그인과 인터넷 연결을 확인해 주세요.'}[ms.state]||'메신저에 연결하는 중…'));
+ if(ms.state==='other_pc')p.append(btn('이 PC 로 메신저 옮기기','move','button primary'));   // 안내를 읽고 두 번 눌러 확인 (2026-11-25)
  if(ms.state&&ms.state!=='ready')p.append(btn('다시 확인','retry'));
  return p;
 }
@@ -241,6 +242,13 @@ async function act(b){
   if(ms.armed!=='del:'+g.id){ms.armed='del:'+g.id;b.textContent='한 번 더 누르면 지워요';setTimeout(()=>{if(ms.armed==='del:'+g.id){ms.armed=null;b.textContent='지우기';}},4000);return;}
   ms.armed=null;try{ms.groups=await call('messenger_group_delete',{gid:g.id});await loadFriends();status(VaderI18n.t('{0} 그룹을 지웠어요. 친구 관계는 그대로예요.',g.name),false,true);}catch(e){}return;}
  if(m==='retry'){ms.state=null;ms.error=null;draw();return tick();}
+ if(m==='move'){
+  if(ms.armed!=='move'){ms.armed='move';b.textContent='한 번 더 누르면 옮겨요 (지난 대화·안 받은 메시지는 오지 않아요)';setTimeout(()=>{if(ms.armed==='move'){ms.armed=null;b.textContent='이 PC 로 메신저 옮기기';}},6000);return;}
+  ms.armed=null;b.disabled=true;
+  try{const c=await call('messenger_move');ms.state=c.state;ms.error=null;if(ms.handle!==(c.handle||null)){ms.handle=c.handle||null;loadSeen();}
+   if(c.state==='ready'){await loadFriends();status('메신저를 이 PC 로 옮겼어요. 친구와 안전 번호를 다시 확인해 주세요.',false,true);}draw();}
+  catch(e){b.disabled=false;}
+  return;}
  if(m==='safety'){const peer=ms.peer,ep=ms.epoch;try{const s=await api('messenger_safety',{account_id:peer});if(ep===ms.epoch){ms.safety={peer,number:s.number,open:true};draw();}}catch(e){status(e.message,true);}return;}
  if(m==='safetyClose'){ms.safety=null;return draw();}
  if(m==='verify'){

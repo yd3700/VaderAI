@@ -55,6 +55,14 @@ class Server:
         self.devices[dev]["revoked"] = True
         self.inbox = [m for m in self.inbox if m["recipient_device"] != dev]
 
+    def post_move(self, who, b):
+        """이 PC 로 옮기기 — 한 계정 한 PC 라 옛 기기의 로그인은 이미 끊겼다고 본다(서버 시험이 그 조건을 따로 본다)."""
+        d = self.accounts[who["account"]].get("device")
+        if not d or self.devices[d]["session"] == who["session"]:
+            return {"moved": False}
+        self.release(who["account"])
+        return {"moved": True}
+
     def _bound(self, who):
         d = self.accounts[who["account"]].get("device")
         if not (d and self.devices[d]["session"] == who["session"]):
@@ -849,3 +857,20 @@ def test_keywords_skip_todo_share_notices_and_id_like_tokens(talking):
     messenger.sync()
     [f] = [f for f in messenger.friends() if f["account_id"] == people["gana"]["account"]]
     assert "발주서" in f["keywords"] and not any(k in ("due", "op", "share", "title") or any(c.isdigit() for c in k) for k in f["keywords"])
+
+
+def test_moving_the_messenger_to_a_new_pc_after_confirming(world, tmp_path):
+    """한 계정 한 PC (2026-11-25): 새 PC 에서는 '다른 PC' 로 멈추고, 사람이 확인해 옮기면 새 키로 새 기기가 된다."""
+    server, people, be = world
+    be("gana")
+    assert messenger.connect()["state"] == "ready"
+    old = server.accounts[people["gana"]["account"]]["device"]
+    new_pc = tmp_path / "gana-new-pc"
+    new_pc.mkdir()
+    people["gana"].update(folder=new_pc, session=str(uuid.uuid4()))      # 같은 계정, 다른 PC·새 로그인
+    be("gana")
+    assert messenger.connect()["state"] == "other_pc"                    # 확인 전에는 아무것도 지우지 않는다
+    assert server.accounts[people["gana"]["account"]]["device"] == old
+    assert messenger.move()["state"] == "ready"
+    now = server.accounts[people["gana"]["account"]]["device"]
+    assert now not in (None, old) and server.devices[old]["revoked"]

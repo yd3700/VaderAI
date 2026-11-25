@@ -28,8 +28,9 @@ def vault(monkeypatch):
     return store
 
 
-def _server(monkeypatch, *, signed_in=True, answer=None, offline=False):
+def _server(monkeypatch, *, signed_in=True, answer=None, offline=False, owner="acc-a"):
     monkeypatch.setattr(account, "signed_in", lambda: signed_in)
+    monkeypatch.setattr(account, "stored_account", lambda origin: owner)   # 저장된 기기 토큰의 계정
 
     def me():
         if offline:
@@ -101,6 +102,16 @@ def test_server_confirmation_is_remembered_for_offline_use(vault, monkeypatch):
     assert gate.who()["account"]["id"] == "acc-a"
     _server(monkeypatch, offline=True)
     assert gate.who() == {"state": "ok", "origin": ORIGIN, "account": {"id": "acc-a", "display_name": "가나메디칼"}}
+
+
+def test_offline_entry_uses_only_the_record_of_the_account_signed_in_now(vault, monkeypatch):
+    """A 로 확인한 기록이 남아 있어도 B 로 로그인한 뒤 서버에 못 닿으면 A 로 들어가지 않는다 (codex1 회신 9). 같은 계정은 그대로."""
+    _server(monkeypatch, answer={"id": "acc-a", "display_name": "가나메디칼"})
+    gate.who()
+    _server(monkeypatch, offline=True, owner="acc-b")
+    assert gate.who() == {"state": "offline"}
+    _server(monkeypatch, offline=True, owner="acc-a")                       # 같은 계정으로 다시 로그인 — 오프라인 7일 그대로
+    assert gate.who()["state"] == "ok"
 
 
 @pytest.mark.parametrize("age", [8 * 86400, -3600])                    # 7일 넘음 · 시계가 뒤로 감

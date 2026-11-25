@@ -116,13 +116,15 @@ class DesktopController:
         except account.AccountError as exc:
             raise ValueError(str(exc)) from None
 
-    def market_install(self, rune_id, version):
-        """목록에서 받아 설치. 설치는 실전 승인이 아니다 — 연습한 뒤 사람이 승인한다."""
+    def market_install(self, rune_id, version, archive_sha256=None):
+        """목록에서 받아 설치. 설치는 실전 승인이 아니다 — 연습한 뒤 사람이 승인한다.
+        archive_sha256 — 확인 창에서 본 패키지. 다르면 받지 않는다 (codex1 2026-11-25)."""
         from vader.core import catalog_sync
         with self.lock:
             self._idle('룬을 설치하세요')
             try:
-                done = catalog_sync.install(str(rune_id), str(version))
+                done = catalog_sync.install(str(rune_id), str(version),
+                                           archive_sha256=None if archive_sha256 is None else str(archive_sha256))
             except catalog_sync.SyncError as exc:
                 raise ValueError(str(exc)) from None
             self._reload()
@@ -147,7 +149,26 @@ class DesktopController:
                     break
         from vader.core import publisher
         renew = publisher.renewal_notice()      # 서명 PC 에만 원장이 있다
-        return {'catalog_notices': trust_catalog.notices() + ([renew] if renew else []), 'exit_required': exit_required}
+        return {'catalog_notices': trust_catalog.notices() + ([renew] if renew else []), 'exit_required': exit_required,
+                'updates': self._market_updates()}
+
+    def _market_updates(self):
+        """내 룬에 [업데이트] 를 띄울 룬 — 광장에 더 새 판이 있는 것만. 지금 받아 둔 목록만 보고 통신하지 않는다
+        (자동 온라인 확인을 끈 사람에게 화면을 여는 것만으로 묻지 않는다, codex1 (e)). 늘어나는 권한도 함께."""
+        from vader.core import catalog_sync, permissions
+        out = {}
+        access = catalog_sync.confirmed_access()
+        if access is None:
+            return out          # 이 계정으로 받을 수 있는지 모른다 — 광장 [목록 새로 고침] 으로 확인 (codex1 2026-11-25)
+        for r in catalog_sync.listing().get('releases', []):
+            rune = self.runes.get(r['rune_id'])
+            if r['state'] != 'update' or rune is None or r['rune_id'] not in access:
+                continue
+            have = set(rune.manifest.permissions)
+            added = [p for p in r['permissions'] if p not in have]
+            out[r['rune_id']] = {'version': r['version'], 'installed': r['installed'], 'archive_sha256': r['archive_sha256'],
+                                 'name': r['name'], 'added': permissions.describe(added) if added else []}
+        return out
 
     def auto_online(self):
         return {'on': config.auto_online()}

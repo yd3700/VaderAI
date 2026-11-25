@@ -1,6 +1,6 @@
 [package]
 name = "vaderai"
-version = "0.1.39"
+version = "0.1.40"
 edition = "2021"
 description = "VaderAI 데스크톱 껍데기 — 창·트레이·대화상자. 업무는 파이썬 일꾼(vader/desktop/worker.py)."
 

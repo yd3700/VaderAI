@@ -104,6 +104,21 @@ def test_a_server_that_answers_with_another_package_is_refused_before_download(m
     assert not any(c.startswith("https://blob") for c in web.calls), "받기 전에 거절"
 
 
+def test_install_takes_only_the_package_the_person_confirmed(monkeypatch):
+    """확인 창에서 본 패키지(sha256)와 목록이 다르면(그사이 재발행·회수) 받지 않는다 — 내 룬 [업데이트]·광장 공통 (2026-11-25)."""
+    archive = packed_reader()
+    release, entry = publish(archive)
+    web = Web({}, release, archive.read_bytes())
+    wire(monkeypatch, web)
+    listed = catalog_sync.listing()["releases"][0]
+    assert listed["archive_sha256"] == entry["archive_sha256"]
+    with pytest.raises(catalog_sync.SyncError, match="그사이 바뀌었어요"):
+        catalog_sync.install("reader", "0.1.0", archive_sha256="0" * 64)
+    assert not any(c.startswith("https://blob") for c in web.calls), "받기 전에 거절"
+    done = catalog_sync.install("reader", "0.1.0", archive_sha256=listed["archive_sha256"])
+    assert done.manifest.id == "reader"
+
+
 def test_a_rune_installed_by_hand_is_not_silently_replaced_from_the_market(monkeypatch):
     archive = packed_reader()
     release, entry = publish(archive)

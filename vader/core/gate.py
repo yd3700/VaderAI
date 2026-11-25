@@ -44,7 +44,7 @@ def who() -> dict:
     """지금 이 PC 에 로그인한 계정. {'state': 'ok', 'origin', 'account'} 또는 들어갈 수 없는 이유."""
     origin = account.site()
     if not account.signed_in():
-        return {"state": "login"}
+        return {"state": "replaced" if account.ended_reason() == "replaced" else "login"}
     try:
         found = account.account()
     except account.AccountError:
@@ -55,7 +55,8 @@ def who() -> dict:
         return {"state": "ok", "origin": origin, "account": {"id": found["id"], "display_name": record["name"]}}
     if found is None:                                   # 서버가 거절 — 토큰은 account 가 이미 지웠다
         secrets.delete(_verified_name(origin), device=True)
-        return {"state": "login"}
+        # 다른 PC 로그인으로 끊겼으면 그렇게 알린다 (한 계정 한 PC, 2026-11-25)
+        return {"state": "replaced" if account.ended_reason() == "replaced" else "login"}
     try:
         record = json.loads(secrets.get(_verified_name(origin), device=True) or "null")
         age = time.time() - float(record["at"])
@@ -63,6 +64,8 @@ def who() -> dict:
     except (ValueError, TypeError, KeyError):
         return {"state": "offline"}
     if not -300 <= age <= OFFLINE_DAYS * 86400:          # 시계가 뒤로 갔거나 7일이 지났다 — 서버 확인부터
+        return {"state": "offline"}
+    if account.stored_account(origin) != account_id:     # 지금 로그인(저장된 토큰)의 계정 기록만 — 다른 계정으로 바뀌었으면 서버 확인부터 (codex1 회신 9)
         return {"state": "offline"}
     return {"state": "ok", "origin": origin, "account": {"id": account_id, "display_name": record.get("name", "")}}
 

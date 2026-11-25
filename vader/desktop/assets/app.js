@@ -93,9 +93,24 @@ function navigate(page) {
 }
 // ── 광장 목록: 운영자가 검토·서명한 패키지. 판정은 코어가, 화면은 목록과 버튼만 ──
 async function loadListing(refresh=false) {try{state.listing=await api('market_list',{refresh});}catch(e){state.listing={enabled:true,fresh:false,releases:[],error:e.message};}if(state.page==='market')render();}
+// 받기 전 확인 — 내 룬 [업데이트] 와 광장이 같은 창 (codex1 2026-11-25). 확인한 패키지(sha256)만 받는다.
+function updateButton(id,u) {return '<button type="button" class="button ghost attention" data-action="marketConfirm" data-id="'+esc(id)+'" data-version="'+esc(u.version)+'" data-sha="'+esc(u.archive_sha256)+'">'+icon('down')+esc(T('v{0} → v{1} 업데이트',u.installed,u.version))+'</button>';}
+// 버튼이 보여 준 바로 그 후보(버전·sha256)만 — 두 목록이 어긋나면 그 버튼의 후보를 가진 쪽만 쓴다 (codex1 P1)
+function marketConfirm(a) {
+ const id=a.dataset.id,want=x=>x&&x.version===a.dataset.version&&x.archive_sha256===a.dataset.sha;
+ const r0=(state.listing?.releases||[]).find(x=>x.rune_id===id),r=want(r0)?r0:null,u=want(updateOf(id))?updateOf(id):null;
+ const pick=u?{...u,rune_id:id}:r;if(!pick)return toast('광장 목록을 새로 고친 뒤 다시 골라 주세요.');
+ const upgrade=!!(u||r.installed),name=VaderI18n.rune(id,pick.name||id);
+ const perm=u?(u.added.length?T('새로 요구하는 권한 · {0}',esc(u.added.map(x=>T(x)).join(' · '))):T('늘어나는 권한 없음'))
+  :(r.permissions.length?T('필요한 권한 · {0}',esc((r.permission_text||r.permissions).map(x=>T(x)).join(' · '))):T('추가 권한 없음'));
+ modal(heading(upgrade?T('{0} 업데이트',name):T('{0} 설치',name)).replace('<h2','<h2 data-raw')
+  +'<p class="dialog-copy">'+esc(upgrade?'v'+pick.installed+' → v'+pick.version:'v'+pick.version)+'</p><p class="dialog-copy">'+perm+'</p>'
+  +'<p class="small muted">받은 뒤에는 연습 실행으로 확인하고 다시 승인해야 실사용할 수 있어요.</p><p id="dialogError" role="alert"></p>'
+  +'<div class="actions"><button type="button" class="button primary" data-action="marketInstall" data-id="'+esc(id)+'" data-version="'+esc(pick.version)+'" data-sha="'+esc(pick.archive_sha256)+'">'+icon('down')+'받기</button>'+button('closeDialog','취소','stop','ghost')+'</div>');
+}
 async function marketInstall(a) {
  a.disabled=true;a.textContent='받는 중…';
- try{const data=await api('market_install',{rune_id:a.dataset.id,version:a.dataset.version});catalog(data);state.listing=data.market;const done=data.installed;
+ try{const data=await api('market_install',{rune_id:a.dataset.id,version:a.dataset.version,archive_sha256:a.dataset.sha});const d=$('#settingsDialog');if(d.open)d.close();if(state.updates)delete state.updates[a.dataset.id];runesBadge();catalog(data);state.listing=data.market;const done=data.installed;
   toast(done.name+' v'+done.version+' 를 받았어요. 내 룬에서 연습 실행으로 확인한 뒤 승인하세요.');render();}
  catch(err){toast(err.message);loadListing();}
 }
@@ -409,7 +424,7 @@ function coreView() {
 function runesView() {
  if(!state.task)return emptyRunes();
  const r=taskRunes[state.task];
- return '<section class="scene grimoire" style="--rune:'+r.color+';--rune-rgb:'+r.rgb+'"><div class="rune-atmosphere" aria-hidden="true"></div><div class="rune-left"><h1>나의 룬</h1><p class="rune-intro">업무 하나, 룬 하나.</p><div class="rune-tree">'+Object.entries(taskRunes).map(([id,d])=>{const on=d.enabled!==false;return '<div class="tree-row'+(on?'':' off')+'" style="--rune:'+d.color+';--rune-rgb:'+d.rgb+'"><button id="tree-'+esc(id)+'" class="tree-rune '+(state.task===id?'selected':'')+'" data-task="'+esc(id)+'" aria-pressed="'+(state.task===id)+'">'+sigil(id)+'<span class="tree-copy"><strong>'+esc(d.name)+'</strong><small>v'+esc(d.version)+(d.locked?'<span class="needs-approval">승인 필요</span>':'')+(on?'':' · 메인에서 숨김')+'</small></span></button><button type="button" class="tree-check" role="checkbox" aria-checked="'+on+'" aria-label="'+esc(d.name)+' 메인에 표시" title="'+(on?'메인에 보여요 · 누르면 숨겨요':'메인에서 숨김 · 누르면 보여요')+'" data-action="toggleRune" data-id="'+esc(id)+'">'+(on?icon('confirm'):'')+'</button></div>';}).join('')+'</div><span class="rune-count">설치된 룬 <b>'+Object.keys(taskRunes).length+'</b></span>'+button('install','룬 설치','up','ghost')+catalogView()+failuresView()+'</div><div class="rune-showcase"><div class="rune-relic" aria-hidden="true"><div class="relic-aura"></div><div class="relic-orbit orbit-one"></div><div class="relic-orbit orbit-two"></div><div class="relic-stone stone-back"></div><div class="relic-stone stone-front"></div>'+sigil(state.task,true)+'<div class="relic-floor"></div><i class="ember e1"></i><i class="ember e2"></i><i class="ember e3"></i><i class="ember e4"></i></div><div class="rune-description"><h2>'+esc(r.name)+'</h2><p>'+(descriptions[r.id]?esc(descriptions[r.id]):r.target_apps.length?'대상 프로그램 · '+esc(r.target_apps.join(', ')):'선택한 파일을 이 룬의 처리 흐름으로 실행합니다.')+'</p><p class="small muted">'+esc(r.locked?r.reason:'승인됨 · 실사용 가능 · v'+r.version)+'</p>'+(r.recordings?.length?'<p class="small muted">함께 설치된 녹화 · '+esc(r.recordings.join(', '))+'</p>':'')+'<div class="actions">'+button('core','이 룬으로 시작','arrow','primary')+(r.samples?.length?button('trySamples','샘플로 연습','play','ghost'):'')+button('settings','설정','settings','ghost')+(r.mapping?button('mapping','매핑 관리','match','ghost'):'')+(r.locked?button('seal','승인','confirm','ghost attention'):'')+button('editRune','수정','workshop','ghost')+'</div><button type="button" class="text-button danger" data-action="uninstall">룬 제거</button></div></div><div data-agent-mount hidden></div></section>';
+ return '<section class="scene grimoire" style="--rune:'+r.color+';--rune-rgb:'+r.rgb+'"><div class="rune-atmosphere" aria-hidden="true"></div><div class="rune-left"><h1>나의 룬</h1><p class="rune-intro">업무 하나, 룬 하나.</p><div class="rune-tree">'+Object.entries(taskRunes).map(([id,d])=>{const on=d.enabled!==false;return '<div class="tree-row'+(on?'':' off')+'" style="--rune:'+d.color+';--rune-rgb:'+d.rgb+'"><button id="tree-'+esc(id)+'" class="tree-rune '+(state.task===id?'selected':'')+'" data-task="'+esc(id)+'" aria-pressed="'+(state.task===id)+'">'+sigil(id)+'<span class="tree-copy"><strong>'+esc(d.name)+'</strong><small>v'+esc(d.version)+(updateOf(id)?'<span class="needs-approval">'+T('업데이트 v{0}',esc(updateOf(id).version))+'</span>':'')+(d.locked?'<span class="needs-approval">승인 필요</span>':'')+(on?'':' · 메인에서 숨김')+'</small></span></button><button type="button" class="tree-check" role="checkbox" aria-checked="'+on+'" aria-label="'+esc(d.name)+' 메인에 표시" title="'+(on?'메인에 보여요 · 누르면 숨겨요':'메인에서 숨김 · 누르면 보여요')+'" data-action="toggleRune" data-id="'+esc(id)+'">'+(on?icon('confirm'):'')+'</button></div>';}).join('')+'</div><span class="rune-count">설치된 룬 <b>'+Object.keys(taskRunes).length+'</b></span>'+button('install','룬 설치','up','ghost')+catalogView()+failuresView()+'</div><div class="rune-showcase"><div class="rune-relic" aria-hidden="true"><div class="relic-aura"></div><div class="relic-orbit orbit-one"></div><div class="relic-orbit orbit-two"></div><div class="relic-stone stone-back"></div><div class="relic-stone stone-front"></div>'+sigil(state.task,true)+'<div class="relic-floor"></div><i class="ember e1"></i><i class="ember e2"></i><i class="ember e3"></i><i class="ember e4"></i></div><div class="rune-description"><h2>'+esc(r.name)+'</h2><p>'+(descriptions[r.id]?esc(descriptions[r.id]):r.target_apps.length?'대상 프로그램 · '+esc(r.target_apps.join(', ')):'선택한 파일을 이 룬의 처리 흐름으로 실행합니다.')+'</p><p class="small muted">'+esc(r.locked?r.reason:'승인됨 · 실사용 가능 · v'+r.version)+'</p>'+(r.recordings?.length?'<p class="small muted">함께 설치된 녹화 · '+esc(r.recordings.join(', '))+'</p>':'')+'<div class="actions">'+(updateOf(r.id)?updateButton(r.id,updateOf(r.id)):'')+button('core','이 룬으로 시작','arrow','primary')+(r.samples?.length?button('trySamples','샘플로 연습','play','ghost'):'')+button('settings','설정','settings','ghost')+(r.mapping?button('mapping','매핑 관리','match','ghost'):'')+(r.locked?button('seal','승인','confirm','ghost attention'):'')+button('editRune','수정','workshop','ghost')+'</div><button type="button" class="text-button danger" data-action="uninstall">룬 제거</button></div></div><div data-agent-mount hidden></div></section>';
 }
 function logsView(j) {return '<div data-log-mount></div>';}
 // 표 편집 초안은 화면 밖에 둔다 — 진행 이벤트로 다시 그려도 고치던 칸이 안 지워진다.
@@ -581,7 +596,7 @@ async function watchUpdate() {
 // 목록 안내 — 작업 중에도 회수가 화면에 닿게 몇 초마다 따로 묻는다. 바뀌었을 때만 다시 그린다.
 async function watchCatalog() {
  try{const a=await api('catalog_alerts'),next=JSON.stringify(a);
-  if(next!==watchCatalog.last){watchCatalog.last=next;state.catalogNotices=a.catalog_notices||[];state.exitRequired=a.exit_required||null;render();}}
+  if(next!==watchCatalog.last){watchCatalog.last=next;state.catalogNotices=a.catalog_notices||[];state.exitRequired=a.exit_required||null;state.updates=a.updates||{};runesBadge();render();}}
  catch(e){}
  loadRuns();   // 기록 찾기 칸은 실행 기록이 있을 때만
  loadTodos(true);   // 다시 알릴 때가 된 카드 표시 (트레이 알림은 코어가 따로)
@@ -657,7 +672,7 @@ function marketView() {
  const r=l.releases.find(x=>x.rune_id===state.marketPick)||l.releases[0], look=runeLook(r.rune_id);
  const rows=l.releases.map(x=>{const d=runeLook(x.rune_id),on=x===r;
   return '<div class="tree-row" style="--rune:'+d.color+';--rune-rgb:'+d.rgb+'"><button type="button" class="tree-rune '+(on?'selected':'')+'" data-action="marketPick" data-id="'+esc(x.rune_id)+'" aria-pressed="'+on+'">'+sigil(x.rune_id)+'<span class="tree-copy"><strong data-raw>'+esc(VaderI18n.rune(x.rune_id,x.name))+'</strong><small>v'+esc(x.version)+' · '+T(MARKET_STATE[x.state])+'</small></span></button></div>';}).join('');
- const take=(text)=>'<button type="button" class="button primary" data-action="marketInstall" data-id="'+esc(r.rune_id)+'" data-version="'+esc(r.version)+'">'+icon('down')+esc(text)+'</button>';
+ const take=(text)=>'<button type="button" class="button primary" data-action="marketConfirm" data-id="'+esc(r.rune_id)+'" data-version="'+esc(r.version)+'" data-sha="'+esc(r.archive_sha256)+'">'+icon('down')+esc(text)+'</button>';
  const act={new:take('설치'),check:take('다시 받기'),update:take('v'+r.installed+' → v'+r.version+' 업데이트'),
   installed:'<p class="small muted">설치됨 · 내 룬에서 연습 실행으로 확인한 뒤 승인하면 실사용할 수 있어요.</p>',
   newer:'<p class="small muted">이 PC 에 v'+esc(r.installed||'')+' 이 설치돼 있어요.</p>',
@@ -895,6 +910,9 @@ async function loadTodos(quiet) {
  try{const cs=await api('todo_list'),day=ymd(new Date()),next=JSON.stringify(cs)+day;state.todoError='';if(next!==loadTodos.last){loadTodos.last=next;state.todos=cs;todoBadge();if((state.page==='todo'&&!dragCard)||state.page==='core')render();}}   // 끄는 중엔 다시 그리지 않는다
  catch(e){state.todoError=e.message;if(state.page==='todo')render();}
 }
+// 광장에 더 새 판이 있는 룬 — [내 룬] 에 점 (코어가 받아 둔 목록만 본다, 통신 없음)
+const updateOf=id=>state.updates&&Object.hasOwn(state.updates,id)?state.updates[id]:null;   // 'constructor' 같은 룬 id 가 상속 값을 읽지 않게
+function runesBadge() {const a=$('.rail a[data-page="runes"]');if(!a)return;const n=Object.keys(state.updates||{}).length;if(n)a.dataset.badge=T('업데이트 {0}',n);else delete a.dataset.badge;}
 function todoBadge() {const a=$('.rail a[data-page="todo"]');if(!a)return;const n=(state.todos||[]).filter(c=>c.ringing).length;if(n)a.dataset.badge='다시 알림 '+n;else delete a.dataset.badge;}
 // 멤버 공유 (2026-11-18) — 친구 이름은 메신저가 알려 준 목록(state.friends)에서. 모르는 사람은 '친구'.
 const handleOf=id=>{const f=(state.friends||[]).find(x=>x.account_id===id);return f?'@'+f.handle:'친구';};
@@ -1384,7 +1402,7 @@ const actions={core:()=>navigate('core'),trySamples:()=>start(taskRunes[state.ta
  todoPrivacy:()=>modal(heading('저장·전송 안내')+'<p class="dialog-copy">할 일은 이 PC 에 저장해요. 내용은 암호화하고 날짜·알림 시각은 그대로 저장해요.</p><p class="dialog-copy">연결한 폰에는 할 일을 보내요. AI로 정리에서 정리 제안을 누르면 적은 말과 열린 할 일의 제목·날짜·알림 시각을 연결한 AI에 보내요. AI 제안은 직접 고른 뒤 적용해야 바뀌어요.</p>'),
  phoneOpen:()=>{phoneOpen.count=null;return phoneOpen();},todoPlanClose:()=>{state.todoPlan=null;render();},todoDone:a=>todoSet('todo_done',{card_id:a.dataset.id,undo:a.getAttribute('aria-checked')==='true'}),resign:openResign,pushCatalog,
  approveFromResult:()=>{state.returnTo=state.job.id;state.task=state.job.rune_id;navigate('runes');openSeal();},
- seal:openSeal,uninstall:openUninstall,toggleRune,confirmUninstall,assignments:openAssignments,marketInstall,marketPick:a=>{state.marketPick=a.dataset.id;render();},marketShare:a=>openShare(a.dataset.id),marketRefresh:()=>loadListing(true),
+ seal:openSeal,uninstall:openUninstall,toggleRune,confirmUninstall,assignments:openAssignments,marketInstall,marketConfirm,marketPick:a=>{state.marketPick=a.dataset.id;render();},marketShare:a=>openShare(a.dataset.id),marketRefresh:()=>loadListing(true),
  mapping:openMapping,mappingCorrect,deptDelete,bulkApply,bulkDelete,learnedSave,learnedReset,
  cancel:()=>api('cancel',{job_id:state.job.id}),answer:()=>answer('answer'),skip:()=>answer('skip'),abort:()=>answer('abort'),
  editAddRow:()=>{const c=state.job.request.context;editDraft.rows.push(Object.fromEntries(c.columns.map(x=>[x[0],x[0]==='page'&&c.pages?c.pages[0]:''])));render();},

@@ -138,6 +138,7 @@ class DesktopAPI:
                 'account_web': lambda: webbrowser.open(f'{account.site()}/{config.ui_lang()}/account/'),   # 로그인 방법 연결·계정 합치기는 웹 계정 화면에서
                 # 메신저 (3단계 3c). 잠긴 동안은 위의 문에서 막힌다 — 받아 오기(sync)도 화면이 열려 있을 때만.
                 'messenger_connect': messenger.connect,
+                'messenger_move': messenger.move,
                 'messenger_friends': messenger.friends,
                 'messenger_find': messenger.find,
                 'messenger_friend': messenger.friend,
@@ -600,9 +601,14 @@ def lock_minutes():
         return 10
 
 
+#: 서버에 이 PC 로그인이 살아 있는지 묻는 간격. 다른 PC 에서 같은 계정으로 로그인하면 이 안에 잠근다
+#: (한 계정 한 PC — 마스터 2026-11-25 '카카오톡처럼 바로'). 네트워크 오류는 기존 오프라인 7일 규칙을 따른다.
+ACCOUNT_CHECK_SECONDS = 30
+
+
 def _watch(api, sleep=time.sleep):
     """2초마다: Windows 잠금·절전 복귀면 잠그고 화면 작업을 멈춘다. PC 를 안 쓴 지 N분이면 잠근다.
-    10분마다 서버가 계정을 끊었는지 본다 (401 이면 바로 잠금 — 다음 시작까지 미루지 않는다, codex1).
+    30초마다 서버가 계정을 끊었는지 본다 (401 이면 바로 잠금 — 다음 시작까지 미루지 않는다, codex1).
 
     유휴는 이 앱만이 아니라 PC 전체 입력이다 — 이온엠에서 일하는 동안은 잠기지 않는다.
     ponytail: RPA 가 보내는 입력도 입력으로 친다. 긴 RPA 중에는 안 잠긴다 — 자동화 입력을 가려야 하면 그때.
@@ -620,7 +626,7 @@ def _watch(api, sleep=time.sleep):
                 continue
             if screen or _idle_seconds() >= lock_minutes() * 60:
                 api.lock()
-            elif now - checked > 600:
+            elif now - checked > ACCOUNT_CHECK_SECONDS:
                 checked = now
                 found = gate.who()              # 401·계정 바뀜·오프라인 7일 넘김 — 열린 채로 두지 않는다 (codex1 P1-2)
                 if found['state'] != 'ok' or gate.root(found['origin'], found['account']['id']) != api._folder:
