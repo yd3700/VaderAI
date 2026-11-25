@@ -42,7 +42,7 @@ def status() -> dict:
 def start() -> None:
     """뒤에서 새 버전을 확인하고 받아 둔다."""
     source = feed() if config.FROZEN else None
-    if not UPDATE_KEYS:
+    if not UPDATE_KEYS or not config.auto_online():   # 꺼 두면 확인하지 않는다
         source = None   # 서명 키가 실린 판만 업데이트한다 — 피드 주소와 상관없이, 키 준비 전에는 끈다 (codex1 구현 2차 P1)
     if source:
         _status.update(state="checking")

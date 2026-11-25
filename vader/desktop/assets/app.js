@@ -1,5 +1,11 @@
 // The screen is driven exclusively by the existing Python JobRunner.
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// 사용자 글·룬이 준 글 — 화면 번역(i18n.js)이 건드리지 않게 [data-raw] 로 감싼다
+const raw = s => '<span data-raw>'+esc(s)+'</span>';
+// 영어 화면에서 룬 문구가 원문으로 남을 때 — 사전이 없거나(실행 전에도), 이 버전 사전 규칙에 안 걸린 룬 원문이 있을 때.
+// texts: 룬이 쓴 **원문**. 끼인 값(한국어 파일명)은 규칙이 걸렸으면 문제가 아니다 (codex1 1차 협의·후속 P2)
+const runeLangNote = (id,...texts) => VaderI18n.lang==='en'&&(!VaderI18n.hasRune(id)||texts.some(s=>s!=null&&!VaderI18n.runeHit(id,s)))?'<p class="small muted">'+T('룬 원문 언어: 한국어')+'</p>':'';
+const T = (s,...a) => VaderI18n.t(s,...a);
 const state = {dismissed:new Set(),page:'core', task:null, job:null, jobs:[], dryRun:true, startPage:1,
   motion:matchMedia('(prefers-reduced-motion: reduce)').matches, busy:false, connected:false, failures:[]};
 let taskRunes = {}, pendingDrop = null, toastTimer, lastSnapshot = '', settingsRune = null, polling = false;
@@ -57,7 +63,8 @@ async function api(method,args={}) {
  return response.data;
 }
 function catalog(data) {
- taskRunes=Object.fromEntries(data.runes.map(r=>[r.id,{...r,...runeLook(r.id)}]));
+ VaderI18n.setRunes(Object.fromEntries(data.runes.filter(r=>r.i18n_en).map(r=>[r.id,r.i18n_en])));   // 룬 패키지 안 번역(그 버전)
+ taskRunes=Object.fromEntries(data.runes.map(r=>[r.id,{...r,...runeLook(r.id),name:VaderI18n.rune(r.id,r.name),fields:(r.fields||[]).map(f=>({...f,label:VaderI18n.rune(r.id,f.label||f.name)}))}]));
  state.failures=data.failures;state.catalogNotices=data.catalog_notices||[];state.exitRequired=data.exit_required||null;state.devMode=!!data.dev_mode;state.clients=data.clients||[];state.testRequests=data.test_requests||[];state.projects=data.projects||[];state.console=data.console||{};state.aiReady=data.ai_ready!==false;
  if(!state.projects.some(p=>p.id===state.project))state.project=state.projects[0]?.id||null;
  if(!taskRunes[state.task]) state.task=data.runes[0]?.id||null;
@@ -152,7 +159,7 @@ function coreStage(ids, nexus) {
   +'<svg class="graph-links" aria-hidden="true">'+ids.map(id=>'<line style="--rune-rgb:'+taskRunes[id].rgb+'"/>').join('')+'</svg>'
   +'<div class="orbit" role="group" aria-label="실행할 룬 · 끌어서 돌리거나 ←/→ 로 골라요">'
   +ids.map(id=>'<button type="button" id="rune-'+esc(id)+'" class="orbit-item'+(id===state.task?' front':'')+'" data-ring="'+esc(id)+'" aria-pressed="'+(id===state.task)+'" tabindex="'+(id===state.task?0:-1)+'">'+sigil(id)+'<span>'+esc(taskRunes[id].name)+'</span></button>').join('')
-  +'</div>'+friendRing()+todoRing()+'<svg class="vortex" viewBox="-1 -1 2 2" aria-hidden="true">'+SPIRAL+'</svg></div><p class="vortex-note">놓으면 <b>'+esc(r.name)+'</b> 실행</p>'
+  +'</div>'+friendRing()+todoRing()+'<svg class="vortex" viewBox="-1 -1 2 2" aria-hidden="true">'+SPIRAL+'</svg></div><p class="vortex-note">'+VaderI18n.t('놓으면 {0} 실행','<b>'+esc(r.name)+'</b>')+'</p>'
   +'<button type="button" class="graph-home" data-action="graphHome" title="처음 자리로 (그래프 빈 곳을 두 번 눌러도 돼요)">'+icon('core')+'<span>처음 자리</span></button></div>';
 }
 // 실행 기록 찾기 (2026-11-10). 실행 기록은 그래프에 별로 두지 않고(마스터 2026-11-12) 찾은 것만 목록으로 보인다.
@@ -190,7 +197,7 @@ function friendRing() {
   +'<div class="friend-orbit" role="group" aria-label="메신저 친구">'
   +'<button type="button" id="friend-hub" class="hub-node" data-friend="" aria-label="메신저 · 친구 목록 열기"><span class="hub-orb" aria-hidden="true">'+icon('chat')+'</span><span class="friend-name">메신저</span></button>'
   // 그룹 (마스터 2026-11-19) — 소속 친구가 있는 그룹은 메신저 공에 그룹 노드로, 그 친구들은 그룹 노드 둘레에. 그룹 없는 친구는 지금처럼 메신저에 바로.
-  +groupsShown(fs).map(g=>'<button type="button" id="group-'+esc(g.id)+'" class="friend-node group-node" data-friend="" data-group="'+esc(g.id)+'" aria-label="그룹 '+esc(g.name)+' · 친구 '+g.n+'명"><span class="friend-orb" aria-hidden="true">'+icon('people')+'</span><span class="friend-name">'+esc(g.name)+'</span><small>'+g.n+'명</small></button>').join('')
+  +groupsShown(fs).map(g=>'<button type="button" id="group-'+esc(g.id)+'" class="friend-node group-node" data-friend="" data-group="'+esc(g.id)+'" aria-label="'+esc(T('그룹 {0} · 친구 {1}명',g.name,g.n))+'" data-raw><span class="friend-orb" aria-hidden="true">'+icon('people')+'</span><span class="friend-name" data-raw>'+esc(g.name)+'</span><small>'+T('{0}명',g.n)+'</small></button>').join('')
   +fs.map(f=>{const t=tag(f),gid=memberOf(f,fs);return '<button type="button" id="friend-'+esc(f.account_id)+'" class="friend-node'+(gid?' member':'')+(f.state==='pending'?' pending':'')+(f.changed?' changed':!f.verified&&f.state==='accepted'?' unverified':'')+(f.unread?' unread':'')+'" data-friend="'+esc(f.account_id)+'"'+(gid?' data-gid="'+esc(gid)+'"':'')+' aria-label="@'+esc(f.handle)+(t?' · '+t:'')+'"><span class="friend-orb" aria-hidden="true">'+esc((f.handle||'?')[0].toUpperCase())+'</span><span class="friend-name">@'+esc(f.handle)+'</span>'+(t?'<small>'+t+'</small>':'')+'</button>';}).join('')
   +'<button type="button" id="friend-add" class="friend-node add" data-friend="" aria-label="아이디로 친구 찾기"><span class="friend-orb" aria-hidden="true">'+icon('plus')+'</span><span class="friend-name">친구</span></button>'
   +'</div><svg class="graph-links member-links" aria-hidden="true">'+fs.filter(f=>memberOf(f,fs)).map(()=>'<line/>').join('')+'</svg>'+keywordRing(fs);
@@ -209,8 +216,8 @@ function todoRing() {
  const cs=todoShown(),n=(state.todos||[]).filter(c=>c.state==='open').length,cut=s=>s.length>14?s.slice(0,13)+'…':s;
  return '<svg class="graph-links todo-links" aria-hidden="true">'+cs.map(()=>'<line/>').join('')+'</svg>'
   +'<div class="todo-orbit" role="group" aria-label="할 일">'
-  +'<button type="button" id="todo-hub" class="hub-node todo-hub" data-todo="" aria-label="할 일 '+n+'개 · 할 일 화면 열기"><span class="hub-orb" aria-hidden="true">'+icon('todo')+'</span><span class="friend-name">할 일'+(n?' '+n:'')+'</span></button>'
-  +cs.map(c=>'<button type="button" id="todo-'+esc(c.id)+'" class="friend-node todo-node'+(c.ringing?' ringing':'')+'" data-todo="'+esc(c.id)+'" title="'+esc(c.title)+'" aria-label="'+esc(c.title)+(c.ringing?' · 다시 알림':'')+'"><span class="friend-orb" aria-hidden="true"></span><span class="friend-name">'+esc(cut(c.title))+'</span>'+(c.ringing?'<small>다시 알림</small>':'')+'</button>').join('')
+  +'<button type="button" id="todo-hub" class="hub-node todo-hub" data-todo="" aria-label="'+esc(VaderI18n.t('할 일 {0}개 · 할 일 화면 열기',n))+'"><span class="hub-orb" aria-hidden="true">'+icon('todo')+'</span><span class="friend-name">'+VaderI18n.t('할 일')+(n?' '+n:'')+'</span></button>'
+  +cs.map(c=>'<button type="button" id="todo-'+esc(c.id)+'" class="friend-node todo-node'+(c.ringing?' ringing':'')+'" data-todo="'+esc(c.id)+'" title="'+esc(c.title)+'" aria-label="'+esc(c.title)+(c.ringing?' · '+T('다시 알림'):'')+'" data-raw><span class="friend-orb" aria-hidden="true"></span><span class="friend-name">'+esc(cut(c.title))+'</span>'+(c.ringing?'<small>다시 알림</small>':'')+'</button>').join('')
   +'</div>';
 }
 // 대화 키워드 — 친구 공 바깥 겹. 같은 낱말을 쓴 친구마다 선을 잇는다. 누르면 그 친구와의 대화 (마스터 요청 2026-11-10).
@@ -412,8 +419,8 @@ function editRowsView(q) {
  const label=k=>(c.columns.find(x=>x[0]===k)||[k,k])[1],cls=k=>'k-'+k+(EDIT_NUMBERS.has(k)?' num':'');
  const cell=(r,i,k)=>{const v=r[k]??'';
   // 원래 행의 쪽은 룬이 바꾸지 않는다 — 새로 넣는 줄만 쪽을 고른다.
-  if(!c.editable.includes(k)||(k==='page'&&r._i!=null))return '<td class="'+cls(k)+'">'+esc(EDIT_NUMBERS.has(k)&&v!==''&&!isNaN(v)?Number(v).toLocaleString():String(v))+'</td>';
-  if(k==='page'&&c.pages)return '<td class="'+cls(k)+'"><select class="edit-cell" data-i="'+i+'" data-k="page" aria-label="'+esc(label(k))+'">'+c.pages.map(p=>'<option '+(String(p)===String(v)?'selected':'')+'>'+esc(String(p))+'</option>').join('')+'</select></td>';
+  if(!c.editable.includes(k)||(k==='page'&&r._i!=null))return '<td class="'+cls(k)+'" data-raw>'+esc(EDIT_NUMBERS.has(k)&&v!==''&&!isNaN(v)?Number(v).toLocaleString():String(v))+'</td>';
+  if(k==='page'&&c.pages)return '<td class="'+cls(k)+'"><select class="edit-cell" data-i="'+i+'" data-k="page" aria-label="'+esc(label(k))+'">'+c.pages.map(p=>'<option value="'+esc(String(p))+'" data-raw '+(String(p)===String(v)?'selected':'')+'>'+esc(String(p))+'</option>').join('')+'</select></td>';
   return '<td class="'+cls(k)+'"><input class="edit-cell" data-i="'+i+'" data-k="'+esc(k)+'" value="'+esc(String(v))+'" autocomplete="off"'+(EDIT_NUMBERS.has(k)?' inputmode="numeric"':'')+' aria-label="'+esc(label(k))+'"></td>';};
  const [text,ok]=editSum(c);
  return '<div class="table-wrap tall"><table class="data-table editable edit-table"><thead><tr>'+c.columns.map(x=>'<th class="'+cls(x[0])+'">'+esc(x[1])+'</th>').join('')+(c.can_add?'<th><span class="sr-only">줄 빼기</span></th>':'')+'</tr></thead><tbody>'+
@@ -434,26 +441,26 @@ function editSum(c) {
 function requestView(j) {
  const q=j.request;if(!q)return '';
  let input='';
- if(q.kind==='edit_rows')return '<section class="confirmation request-panel" aria-labelledby="requestTitle"><h3 id="requestTitle">'+esc(q.prompt)+'</h3>'+editRowsView(q)+'<div class="actions">'+button('answer','고쳐서 다시 입고','confirm','primary')+button('skip','건너뛰기','arrow','ghost')+button('abort','중단','stop','ghost')+'</div><p id="responseError" role="alert"></p></section>';
- if(q.kind==='choice')input='<label for="answerValue">선택</label><select id="answerValue">'+q.options.map(o=>'<option>'+esc(o)+'</option>').join('')+'</select>';
+ if(q.kind==='edit_rows')return '<section class="confirmation request-panel" aria-labelledby="requestTitle"><h3 id="requestTitle" data-raw>'+esc(VaderI18n.rune(j.rune_id,q.prompt))+'</h3>'+runeLangNote(j.rune_id,q.prompt)+editRowsView(q)+'<div class="actions">'+button('answer','고쳐서 다시 입고','confirm','primary')+button('skip','건너뛰기','arrow','ghost')+button('abort','중단','stop','ghost')+'</div><p id="responseError" role="alert"></p></section>';
+ if(q.kind==='choice')input='<label for="answerValue">선택</label><select id="answerValue">'+q.options.map(o=>'<option value="'+esc(o)+'" data-raw>'+esc(VaderI18n.choice(j.rune_id,q.prompt,o))+'</option>').join('')+'</select>';
  if(q.kind==='correct_value')input='<label for="answerValue">수정할 값</label><input id="answerValue" autocomplete="off">';
- return '<section class="confirmation request-panel" aria-labelledby="requestTitle"><h3 id="requestTitle">'+esc(q.prompt)+'</h3>'+(Object.keys(q.context).length?'<pre>'+esc(JSON.stringify(q.context,null,2))+'</pre>':'')+input+'<div class="actions">'+button('answer','확인하고 계속','confirm','primary')+button('skip','건너뛰기','arrow','ghost')+button('abort','중단','stop','ghost')+'</div><p id="responseError" role="alert"></p></section>';
+ return '<section class="confirmation request-panel" aria-labelledby="requestTitle"><h3 id="requestTitle" data-raw>'+esc(VaderI18n.rune(j.rune_id,q.prompt))+'</h3>'+runeLangNote(j.rune_id,q.prompt)+(Object.keys(q.context).length?'<pre data-raw>'+esc(JSON.stringify(Object.fromEntries(Object.entries(q.context).map(([k,v])=>[VaderI18n.rune(j.rune_id,k),v])),null,2))+'</pre>':'')+input+'<div class="actions">'+button('answer','확인하고 계속','confirm','primary')+button('skip','건너뛰기','arrow','ghost')+button('abort','중단','stop','ghost')+'</div><p id="responseError" role="alert"></p></section>';
 }
 function runView() {
  const j=state.job;if(!j)return resultView();
  const total=j.total, pct=total>0?Math.min(100,j.current/total*100):null;
- return '<section class="scene"><div class="page-top"><h2>'+esc(taskRunes[j.rune_id]?.name||j.rune_id)+'</h2><span class="pill">'+(j.dry_run?'연습 실행':'실사용 실행')+'</span></div><div class="run-layout"><div class="run-core" data-agent-mount></div><div class="run-copy"><p class="small muted">'+esc(j.files.join(' · '))+'</p><h1>'+statusText(j)+'</h1><p class="lead">'+esc(j.failure?.message||j.message||'룬의 응답을 기다리고 있어요.')+'</p><div class="progress '+(pct===null?'indeterminate':'')+'" role="progressbar" aria-label="작업 진행" '+(pct!==null?'aria-valuemin="0" aria-valuemax="100" aria-valuenow="'+Math.round(pct)+'"':'')+'><span style="transform:scaleX('+(pct===null?.25:pct/100)+')"></span></div><div class="run-count"><span>'+j.current+'</span><small>'+(total!==null?' / '+total:' · 진행 항목')+'</small></div><div class="actions">'+(j.terminal?button('result','결과 보기','arrow','primary'):j.state==='cancel_requested'?'<span class="muted">중단 완료를 기다리는 중</span>':button('cancel','중단','stop','ghost'))+'</div></div></div>'+catalogView()+requestView(j)+logsView(j)+'</section>';
+ return '<section class="scene"><div class="page-top"><h2>'+esc(taskRunes[j.rune_id]?.name||j.rune_id)+'</h2><span class="pill">'+(j.dry_run?'연습 실행':'실사용 실행')+'</span></div><div class="run-layout"><div class="run-core" data-agent-mount></div><div class="run-copy"><p class="small muted">'+esc(j.files.join(' · '))+'</p><h1>'+statusText(j)+'</h1><p class="lead">'+esc(VaderI18n.rune(j.rune_id,j.failure?.message||j.message||'룬의 응답을 기다리고 있어요.'))+'</p><div class="progress '+(pct===null?'indeterminate':'')+'" role="progressbar" aria-label="작업 진행" '+(pct!==null?'aria-valuemin="0" aria-valuemax="100" aria-valuenow="'+Math.round(pct)+'"':'')+'><span style="transform:scaleX('+(pct===null?.25:pct/100)+')"></span></div><div class="run-count"><span>'+j.current+'</span><small>'+(total!==null?' / '+total:' · 진행 항목')+'</small></div><div class="actions">'+(j.terminal?button('result','결과 보기','arrow','primary'):j.state==='cancel_requested'?'<span class="muted">중단 완료를 기다리는 중</span>':button('cancel','중단','stop','ghost'))+'</div></div></div>'+catalogView()+requestView(j)+logsView(j)+'</section>';
 }
 function resultView() {
  const j=state.job;
  if(!j)return coreView();
  const r=taskRunes[j.rune_id], next=promoteBubble(j)+retryBubble(j);
  const done=j.seen?button('back','돌아가기','back','ghost'):button('confirmResult','확인하고 돌아가기','confirm',next?'ghost':'primary');
- return '<section class="scene result-layout"><div class="result-agent" data-agent-mount></div><h1>'+statusText(j)+'</h1><p class="lead">'+esc(r?.name||j.rune_id)+' · '+(j.dry_run?'연습 실행':'실사용 실행')+(j.attempt>1?' · '+j.attempt+'번째 시도':'')+'</p><p class="small muted">'+esc(j.files.join(' · '))+'</p>'
-  +(j.failure?'<p class="error-copy">'+esc(j.failure.message)+'</p>':'')
-  +(Object.keys(j.summary).length?'<dl class="result-summary">'+Object.entries(j.summary).map(([k,v])=>'<div><dt>'+esc(k)+'</dt><dd>'+esc(typeof v==='object'?JSON.stringify(v):v)+'</dd></div>').join('')+'</dl>':'')
+ return '<section class="scene result-layout"><div class="result-agent" data-agent-mount></div><h1>'+statusText(j)+'</h1><p class="lead">'+raw(r?.name||j.rune_id)+' · '+T(j.dry_run?'연습 실행':'실사용 실행')+(j.attempt>1?' '+T('· {0}번째 시도',j.attempt):'')+'</p><p class="small muted">'+esc(j.files.join(' · '))+'</p>'
+  +(j.failure?'<p class="error-copy">'+esc(VaderI18n.rune(j.rune_id,j.failure.message))+'</p>':'')
+  +(Object.keys(j.summary).length?'<dl class="result-summary">'+Object.entries(j.summary).map(([k,v])=>'<div><dt data-raw>'+esc(VaderI18n.rune(j.rune_id,k))+'</dt><dd data-raw>'+esc(typeof v==='object'?JSON.stringify(v):VaderI18n.value(j.rune_id,k,v))+'</dd></div>').join('')+'</dl>':'')
   +(j.artifacts.length?'<div class="artifact-list">'+j.artifacts.map((name,i)=>'<button class="button" data-artifact="'+i+'">'+icon('file')+esc(name)+' · 위치 보기</button>').join('')+'</div>':'')
-  +(j.failures.length?'<details><summary>처리 오류 '+j.failures.length+'건</summary>'+j.failures.map(f=>'<p>'+esc(f.message)+'</p>').join('')+'</details>':'')
+  +(j.failures.length?'<details><summary>처리 오류 '+j.failures.length+'건</summary>'+j.failures.map(f=>'<p data-raw>'+esc(VaderI18n.rune(j.rune_id,f.message))+'</p>').join('')+'</details>':'')
   +next+'<div class="actions">'+(j.failure&&/AI 연결/.test(j.failure.message)?button('openAi','AI 연결','link','primary'):'')+done+'</div>'+logsView(j)+historyView(j.id)+'</section>';
 }
 // 이번 세션 기록 — 한 건만 있어도 다시 열 수 있게. 앱을 닫으면 사라진다(파일은 남는다).
@@ -501,7 +508,7 @@ function start(paths, selected=intent()) {
  const r=taskRunes[selected.rune_id];if(!r)return;
  const names=paths.map(p=>String(p).split(/[\\/]/).pop()),dry=r.locked||selected.dry_run;
  const d=modal('<form id="runAsk">'+heading(r.name+' 실행')
-  +'<p class="dialog-copy run-files">'+esc(names.slice(0,3).join(' · '))+(names.length>3?' 외 '+(names.length-3)+'개':'')+'</p>'
+  +runeLangNote(r.id)+'<p class="dialog-copy run-files">'+esc(names.slice(0,3).join(' · '))+(names.length>3?' 외 '+(names.length-3)+'개':'')+'</p>'
   +'<label class="check"><input id="runDry" type="checkbox" '+(dry?'checked ':'')+(r.locked?'disabled':'')+'> 연습 실행</label>'
   +(START_PAGE_RUNES.has(r.id)?'<div class="settings-field"><label for="runPage">시작 페이지</label><input id="runPage" type="number" min="1" value="'+(selected.start_page||1)+'"></div>':'')
   +'<p class="small muted" id="runNote">'+esc(r.locked?r.reason:dry?'연습 모드 · 실제 저장 동작은 룬의 연습 정책을 따릅니다.':'실사용 모드 · 실제 처리가 시작됩니다.')+'</p>'
@@ -545,7 +552,7 @@ async function poll() {
   if(snapshot!==lastSnapshot||reconnected) {
    lastSnapshot=snapshot;state.jobs=jobs;railBadge();
    const previous=state.job;state.job=jobs.find(j=>j.id===previous?.id)||jobs[0]||null;
-   if(state.job?.request?.id!==previous?.request?.id&&state.job?.request)$('#announcer').textContent=state.job.request.prompt;
+   if(state.job?.request?.id!==previous?.request?.id&&state.job?.request)$('#announcer').textContent=VaderI18n.rune(state.job.rune_id,state.job.request.prompt);
    if(state.page==='run'&&state.job?.terminal&&!previous?.terminal)navigate('result');
    else if(['run','result'].includes(state.page)) {
     const withoutLogs=j=>j?{...j,logs:null}:null;
@@ -566,9 +573,9 @@ async function watchUpdate() {
  let u;try{u=await api('update_status');}catch(e){setTimeout(watchUpdate,5000);return;}
  const el=$('#updateStatus'),v=u.version?' v'+u.version:'';
  const text={downloading:'새 버전'+v+' 받는 중'+(u.progress?' '+u.progress+'%':'')+' · 끝나기 전에 닫으면 다음에 다시 받아요',
-  ready:'새 버전'+v+' 준비됨 · 창을 닫으면 바뀌어요',failed:'업데이트 확인 실패 · 다음 실행 때 다시 시도해요'}[u.state];
+  ready:VaderI18n.t('새 버전{0} 준비됨 · 창을 닫으면 바뀌어요',v),failed:'업데이트 확인 실패 · 다음 실행 때 다시 시도해요'}[u.state];
  el.hidden=!text;el.textContent=text||'';el.className='update-status '+u.state;el.title=u.state==='failed'?(u.error||''):'';
- if(u.state==='ready')toast('새 버전'+v+'을 받았어요. 작업이 없을 때 창을 닫으면 새 버전으로 바뀌어요.');
+ if(u.state==='ready')toast(VaderI18n.t('새 버전{0}을 받았어요. 작업이 없을 때 창을 닫으면 새 버전으로 바뀌어요.',v));
  if(['checking','downloading'].includes(u.state))setTimeout(watchUpdate,2000);
 }
 // 목록 안내 — 작업 중에도 회수가 화면에 닿게 몇 초마다 따로 묻는다. 바뀌었을 때만 다시 그린다.
@@ -593,7 +600,7 @@ async function openSettings() {
  const dialog=$('#settingsDialog');dialog.classList.remove('wide');
  dialog.innerHTML='<form id="settingsForm"><div class="dialog-heading"><h2 id="settingsTitle">'+esc(r.name)+' 설정</h2><button type="button" class="text-button" id="closeSettings">닫기</button></div>'+r.fields.map((f,i)=>{
   const id='field-'+i, value=f.value??'';
-  const input=f.kind==='choice'?'<select id="'+id+'" name="'+esc(f.name)+'">'+f.options.map(o=>'<option '+(o===value?'selected':'')+'>'+esc(o)+'</option>').join('')+'</select>':'<input id="'+id+'" name="'+esc(f.name)+'" type="'+(f.kind==='secret'?'password':f.kind==='number'?'number':'text')+'" value="'+esc(value)+'" '+(f.kind==='secret'&&f.configured?'placeholder="저장된 값 유지"':'')+' autocomplete="off">';
+  const input=f.kind==='choice'?'<select id="'+id+'" name="'+esc(f.name)+'">'+f.options.map(o=>'<option value="'+esc(o)+'" data-raw '+(o===value?'selected':'')+'>'+esc(VaderI18n.choice(settingsRune,f.name,o))+'</option>').join('')+'</select>':'<input id="'+id+'" name="'+esc(f.name)+'" type="'+(f.kind==='secret'?'password':f.kind==='number'?'number':'text')+'" value="'+esc(value)+'" '+(f.kind==='secret'&&f.configured?'placeholder="저장된 값 유지"':'')+' autocomplete="off">';
   return '<div class="settings-field"><label for="'+id+'">'+esc(f.label||f.name)+(f.optional?' · 선택':'')+'</label><div>'+input+(['path','dir'].includes(f.kind)?'<button type="button" class="text-button" data-pick-field="'+id+'" data-kind="'+f.kind+'">찾기</button>':'')+'</div></div>';
  }).join('')+(r.fields.length?'':'<p>이 룬에는 추가 설정이 없습니다.</p>')+'<p id="settingsError" role="alert"></p><div class="actions"><button type="submit" class="button primary">저장</button></div></form>';
  $('#closeSettings').onclick=()=>dialog.close();
@@ -649,7 +656,7 @@ function marketView() {
  if(!l.releases.length)return '<section class="scene market"><h1>광장</h1><p class="muted market-off">'+(l.error?'':l.fresh?'아직 올라온 룬이 없어요.':'목록 정보를 아직 받지 못했어요. 인터넷 연결을 확인한 뒤 새로 고쳐 주세요.')+'</p>'+refresh+'</section>';
  const r=l.releases.find(x=>x.rune_id===state.marketPick)||l.releases[0], look=runeLook(r.rune_id);
  const rows=l.releases.map(x=>{const d=runeLook(x.rune_id),on=x===r;
-  return '<div class="tree-row" style="--rune:'+d.color+';--rune-rgb:'+d.rgb+'"><button type="button" class="tree-rune '+(on?'selected':'')+'" data-action="marketPick" data-id="'+esc(x.rune_id)+'" aria-pressed="'+on+'">'+sigil(x.rune_id)+'<span class="tree-copy"><strong>'+esc(x.name)+'</strong><small>v'+esc(x.version)+' · '+MARKET_STATE[x.state]+'</small></span></button></div>';}).join('');
+  return '<div class="tree-row" style="--rune:'+d.color+';--rune-rgb:'+d.rgb+'"><button type="button" class="tree-rune '+(on?'selected':'')+'" data-action="marketPick" data-id="'+esc(x.rune_id)+'" aria-pressed="'+on+'">'+sigil(x.rune_id)+'<span class="tree-copy"><strong data-raw>'+esc(VaderI18n.rune(x.rune_id,x.name))+'</strong><small>v'+esc(x.version)+' · '+T(MARKET_STATE[x.state])+'</small></span></button></div>';}).join('');
  const take=(text)=>'<button type="button" class="button primary" data-action="marketInstall" data-id="'+esc(r.rune_id)+'" data-version="'+esc(r.version)+'">'+icon('down')+esc(text)+'</button>';
  const act={new:take('설치'),check:take('다시 받기'),update:take('v'+r.installed+' → v'+r.version+' 업데이트'),
   installed:'<p class="small muted">설치됨 · 내 룬에서 연습 실행으로 확인한 뒤 승인하면 실사용할 수 있어요.</p>',
@@ -658,20 +665,20 @@ function marketView() {
  return '<section class="scene grimoire market" style="--rune:'+look.color+';--rune-rgb:'+look.rgb+'"><div class="rune-atmosphere" aria-hidden="true"></div>'
   +'<div class="rune-left"><h1>광장</h1><p class="rune-intro">운영자가 검토하고 서명한 룬.</p><div class="rune-tree">'+rows+'</div>'+refresh+'</div>'
   +'<div class="rune-showcase"><div class="rune-relic" aria-hidden="true"><div class="relic-aura"></div><div class="relic-orbit orbit-one"></div><div class="relic-orbit orbit-two"></div><div class="relic-stone stone-back"></div><div class="relic-stone stone-front"></div>'+sigil(r.rune_id,true)+'<div class="relic-floor"></div><i class="ember e1"></i><i class="ember e2"></i><i class="ember e3"></i><i class="ember e4"></i></div>'
-  +'<div class="rune-description"><h2>'+esc(r.name)+'</h2><p>'+esc(r.summary||descriptions[r.rune_id]||'운영자가 검토하고 서명한 룬이에요.')+'</p>'
-  +'<p class="small muted">v'+esc(r.version)+' · '+(r.permissions.length?'필요한 권한 · '+esc((r.permission_text||r.permissions).join(' · ')):'추가 권한 없음')+'</p>'
+  +'<div class="rune-description"><h2 data-raw>'+esc(VaderI18n.rune(r.rune_id,r.name))+'</h2><p>'+esc(r.summary||descriptions[r.rune_id]||'운영자가 검토하고 서명한 룬이에요.')+'</p>'
+  +'<p class="small muted">v'+esc(r.version)+' · '+(r.permissions.length?T('필요한 권한 · {0}',esc((r.permission_text||r.permissions).join(' · '))):T('추가 권한 없음'))+'</p>'
   +'<div class="actions">'+act+(l.publisher?'<button type="button" class="button ghost" data-action="marketShare" data-id="'+esc(r.rune_id)+'">'+icon('people')+'공유</button>':'')+'</div><p class="small muted market-after">받은 뒤에는 이 PC 에서 연습 실행으로 확인하고 승인해야 실사용할 수 있어요.</p></div></div></section>';
 }
 // 받은 패키지의 서명 상태. 깨진 서명은 서버 쪽에서 이미 거부됐다.
 function signatureView(s) {
  const g=s.signature||{state:'none'};
- if(g.state==='trusted')return '<p class="signature trusted">'+icon('confirm')+'<span><b>'+esc(g.signer)+'</b> 서명 · 등록된 서명자예요.</span></p>';
- if(g.state==='unknown')return '<div class="signature unknown"><p><b>'+esc(g.signer)+'</b> 서명 · 아직 등록하지 않은 서명자예요. 확인 번호 <b class="key-id">'+esc(g.key_id)+'</b></p><label class="check"><input type="checkbox" id="trustSigner"> 보낸 사람에게 전화 등으로 이 번호가 맞는지 확인했어요 (서명자로 등록)</label></div>';
+ if(g.state==='trusted')return '<p class="signature trusted">'+icon('confirm')+'<span>'+T('{0} 서명 · 등록된 서명자예요.','<b data-raw>'+esc(g.signer)+'</b>')+'</span></p>';
+ if(g.state==='unknown')return '<div class="signature unknown"><p>'+T('{0} 서명 · 아직 등록하지 않은 서명자예요. 확인 번호 {1}','<b data-raw>'+esc(g.signer)+'</b>','<b class="key-id">'+esc(g.key_id)+'</b>')+'</p><label class="check"><input type="checkbox" id="trustSigner"> 보낸 사람에게 전화 등으로 이 번호가 맞는지 확인했어요 (서명자로 등록)</label></div>';
  return '<p class="signature none">서명 없음 · 직접 만든 룬이면 괜찮아요. 다른 사람에게 받은 파일이면 설치하지 마세요.</p>';
 }
 // 시험 요청 — 만드는 프로그램이 rune_test 를 불렀는데 이 버전을 아직 사람이 허용하지 않았다 (마스터 결정 2026-10-14).
 function testRequests() {
- return state.testRequests.map(t=>'<button type="button" class="test-request" data-action="reviewTest" data-id="'+esc(t.id)+'"><strong>시험 요청 · '+esc(t.name)+'</strong><small>'+(t.watch.length||t.needs.length?'확인할 동작 '+(t.watch.length+t.needs.length)+'가지 · ':'')+'요약 보고 허용</small></button>').join('');
+ return state.testRequests.map(t=>'<button type="button" class="test-request" data-action="reviewTest" data-id="'+esc(t.id)+'"><strong>시험 요청 · '+esc(t.name)+'</strong><small>'+(t.watch.length||t.needs.length?T('확인할 동작 {0}가지 ·',t.watch.length+t.needs.length)+' ':'')+T('요약 보고 허용')+'</small></button>').join('');
 }
 // 코드를 실행하지 않고 읽은 요약. 설치 확인과 시험 허용이 같은 모양을 쓴다.
 function codeSummary(s) {
@@ -681,7 +688,7 @@ function codeSummary(s) {
 }
 function reviewTest(a) {
  const t=state.testRequests.find(x=>x.id===a.dataset.id);if(!t)return;
- modal(heading(t.name+' · 시험 허용')+'<p class="dialog-copy">만드는 프로그램이 이 버전을 <b>이 PC 에서</b> 시험하려고 해요. 보안 격리는 아니에요. 코드를 고치면 다시 허용해야 해요.</p>'+codeSummary(t)+'<p id="dialogError" role="alert"></p><div class="actions"><button type="button" class="button primary" data-action="allowTest" data-id="'+esc(t.id)+'">'+icon('confirm')+'이 버전만 시험 허용</button>'+button('closeDialog','취소','stop','ghost')+'</div>',true);
+ modal(heading(T('{0} · 시험 허용',t.name)).replace('<h2','<h2 data-raw')+'<p class="dialog-copy">만드는 프로그램이 이 버전을 <b>이 PC 에서</b> 시험하려고 해요. 보안 격리는 아니에요. 코드를 고치면 다시 허용해야 해요.</p>'+codeSummary(t)+'<p id="dialogError" role="alert"></p><div class="actions"><button type="button" class="button primary" data-action="allowTest" data-id="'+esc(t.id)+'">'+icon('confirm')+'이 버전만 시험 허용</button>'+button('closeDialog','취소','stop','ghost')+'</div>',true);
 }
 async function allowTest(a) {
  const t=state.testRequests.find(x=>x.id===a.dataset.id);if(!t)return;
@@ -864,7 +871,7 @@ async function installProject(a) {
 }
 function showInstall(shown) {
  pendingInstall=shown;
- modal(heading((shown.name||shown.id)+(shown.version?' v'+shown.version:'')+' 설치')+'<p class="dialog-copy">설치하면 이 PC 에서 이 룬의 코드가 돌 수 있어요. 아래 내용이 맞는지 보고 설치하세요.</p>'+signatureView(shown)+codeSummary(shown)+'<p id="dialogError" role="alert"></p><div class="actions">'+button('confirmInstall','설치','confirm','primary')+button('closeDialog','취소','stop','ghost')+'</div>',true);
+ modal(heading(T('{0} 설치',VaderI18n.runeWith(shown.i18n_en,shown.name||shown.id)+(shown.version?' v'+shown.version:''))).replace('<h2','<h2 data-raw')+'<p class="dialog-copy">설치하면 이 PC 에서 이 룬의 코드가 돌 수 있어요. 아래 내용이 맞는지 보고 설치하세요.</p>'+signatureView(shown)+codeSummary(shown)+'<p id="dialogError" role="alert"></p><div class="actions">'+button('confirmInstall','설치','confirm','primary')+button('closeDialog','취소','stop','ghost')+'</div>',true);
 }
 async function confirmInstall() {
  const shown=pendingInstall;if(!shown)return;
@@ -908,9 +915,9 @@ function todoCard(c) {
  const meta=c.state==='done'?'':c.ringing?'<span class="todo-ring">다시 알림'+(c.remind_at?' · '+c.remind_at.slice(11,16):'')+'</span>':late?'<span class="todo-late">'+md(c.due)+' 예정</span>':c.remind_at?esc((c.due>today?md(c.remind_at)+' ':'')+c.remind_at.slice(11,16)+' 알림'):c.due>today?md(c.due):'';
  return '<li class="todo-card'+(c.state==='done'?' done':'')+'"'+(c.state==='open'?' data-card="'+c.id+'"':'')+'>'
   +(c.state==='open'?'<span class="todo-grip" aria-hidden="true">'+icon('grip')+'</span>':'')
-  +'<button id="todo-check-'+c.id+'" type="button" class="todo-check" role="checkbox" aria-checked="'+(c.state==='done')+'" aria-label="'+esc(c.title)+(c.state==='done'?' 완료 취소':' 완료')+'" title="완료 전환 · Alt+↑/↓로 순서 이동" data-action="todoDone" data-id="'+c.id+'"><span>'+(c.state==='done'?icon('confirm'):'')+'</span></button>'
-  +'<div class="todo-copy"><button type="button" class="todo-open" data-action="noteOpen" data-id="'+c.id+'" aria-expanded="'+(state.note?.card===c.id)+'" aria-controls="todoNote" title="세부 내용 (카드를 눌러도 열려요)">'+esc(c.title)+'</button>'+(who?'<small>'+who+'</small>':'')+'</div><small class="todo-meta">'+meta+'</small>'+shareBtn
-  +'<details class="todo-menu"><summary id="todo-more-'+c.id+'" aria-label="'+esc(c.title)+' 더보기">'+todoMoreIcon()+'</summary><div class="todo-menu-items">'
+  +'<button id="todo-check-'+c.id+'" type="button" class="todo-check" role="checkbox" aria-checked="'+(c.state==='done')+'" aria-label="'+esc(c.title+' · '+T(c.state==='done'?'완료 취소':'완료'))+'" data-raw title="완료 전환 · Alt+↑/↓로 순서 이동" data-action="todoDone" data-id="'+c.id+'"><span>'+(c.state==='done'?icon('confirm'):'')+'</span></button>'
+  +'<div class="todo-copy"><button type="button" class="todo-open" data-action="noteOpen" data-id="'+c.id+'" aria-expanded="'+(state.note?.card===c.id)+'" aria-controls="todoNote" title="세부 내용 (카드를 눌러도 열려요)">'+raw(c.title)+'</button>'+(who?'<small>'+who+'</small>':'')+'</div><small class="todo-meta">'+meta+'</small>'+shareBtn
+  +'<details class="todo-menu"><summary id="todo-more-'+c.id+'" aria-label="'+esc(T('{0} 더보기',c.title))+'" data-raw>'+todoMoreIcon()+'</summary><div class="todo-menu-items">'
   +(c.state==='open'&&!c.owner?'<button type="button" data-action="todoSnooze" data-id="'+c.id+'">미루기</button>':'')
   +'<button type="button" data-action="todoDelete" data-id="'+c.id+'">'+(c.owner?'내 목록에서 빼기':'지우기')+'</button></div></details>'
   +(state.note?.card===c.id?postitView(state.note):'')+'</li>';
@@ -921,11 +928,11 @@ function todoMemberName(){const m=state.todoMember||'';if(m.startsWith('g:'))ret
 // 고른 그룹은 이 PC 화면에 기억한다(다음에 켜도 그대로). 친구 한 명에게만 보낼 때는 아래 '친구' 묶음에서.
 function todoMemberPick() {
  const fs=(state.friends||[]).filter(f=>f.state==='accepted'&&f.verified),gs=state.todoGroups||[];
- const opt=(v,t)=>'<option value="'+esc(v)+'"'+(state.todoMember===v?' selected':'')+'>'+esc(t)+'</option>';
+ const opt=(v,t,mine)=>'<option value="'+esc(v)+'"'+(mine?' data-raw':'')+(state.todoMember===v?' selected':'')+'>'+esc(t)+'</option>';
  const live=g=>fs.filter(f=>f.group===g.id).length;
  return '<label class="todo-member"><span class="sr-only">공유할 그룹</span><select id="todoMember" class="select"'+(gs.length||fs.length?'':' disabled')+'>'
   +'<option value="">'+(gs.length?'그룹 선택':'그룹 없음 · 메신저에서 만들어요')+'</option>'
-  +gs.map(g=>opt('g:'+g.id,g.name+(live(g)?' · '+live(g)+'명':' · 대화 가능한 친구 없음'))).join('')
+  +gs.map(g=>opt('g:'+g.id,g.name+(live(g)?' · '+T('{0}명',live(g)):' '+T('· 대화 가능한 친구 없음')),true)).join('')
   +(fs.length?'<optgroup label="친구 한 명에게">'+fs.map(f=>opt('f:'+f.account_id,'@'+f.handle)).join('')+'</optgroup>':'')+'</select></label>';
 }
 try{state.todoMember=localStorage.getItem('vader.todoMember')||'';}catch{}
@@ -936,20 +943,20 @@ function todoView() {
  if(cs==null)return '<section class="scene todo"><h1>할 일</h1>'+(state.todoError?'<p class="ai-bad">'+esc(state.todoError)+'</p>':'<p class="muted">불러오는 중…</p>')+'</section>';
  const open=cs.filter(c=>c.state==='open'),done=cs.filter(c=>c.state==='done'),groups={today:open.filter(c=>c.due<=today||c.ringing),next:open.filter(c=>c.due>today&&!c.ringing),all:open},shown=groups[tab]||groups.today;
  const form='<form class="todo-add" id="todoAdd">'+icon('plus')+'<label class="sr-only" for="todoTitle">할 일</label><input id="todoTitle" maxlength="200" placeholder="할 일을 적고 Enter" autocomplete="off" value="'+esc(state.todoDraft?.title||'')+'"><label class="todo-date"><span id="todoDateLabel">'+(due===today?'오늘':md(due))+'</span><input id="todoDue" aria-label="할 일 날짜" type="date" required value="'+esc(due)+'"></label><button type="submit" class="button primary">추가</button></form>';
- return '<section class="scene todo"><div class="todo-heading"><div><h1>할 일</h1><p class="todo-today">'+now.toLocaleDateString('ko-KR',{month:'long',day:'numeric',weekday:'long'})+'</p></div><div class="todo-tools"><button id="todoAiOpen" type="button" class="button ghost" data-action="todoAiOpen" aria-expanded="'+!!state.todoAiOpen+'" aria-controls="todoAi">AI로 정리</button><details class="todo-menu"><summary aria-label="할 일 화면 더보기">'+todoMoreIcon()+'</summary><div class="todo-menu-items"><button type="button" data-action="phoneOpen">폰에서 보기</button><button type="button" data-action="todoPrivacy">저장·전송 안내</button></div></details></div></div>'+form
+ return '<section class="scene todo"><div class="todo-heading"><div><h1>할 일</h1><p class="todo-today">'+now.toLocaleDateString(VaderI18n.lang==='en'?'en-US':'ko-KR',{month:'long',day:'numeric',weekday:'long'})+'</p></div><div class="todo-tools"><button id="todoAiOpen" type="button" class="button ghost" data-action="todoAiOpen" aria-expanded="'+!!state.todoAiOpen+'" aria-controls="todoAi">AI로 정리</button><details class="todo-menu"><summary aria-label="할 일 화면 더보기">'+todoMoreIcon()+'</summary><div class="todo-menu-items"><button type="button" data-action="phoneOpen">폰에서 보기</button><button type="button" data-action="todoPrivacy">저장·전송 안내</button></div></details></div></div>'+form
   +'<div class="todo-bar"><nav class="todo-tabs" aria-label="할 일 목록">'+[['today','오늘'],['next','예정'],['all','전체']].map(([k,label])=>'<button id="todo-tab-'+k+'" type="button" data-action="todoTab" data-tab="'+k+'" aria-pressed="'+(tab===k)+'">'+label+' <span>'+groups[k].length+'</span></button>').join('')+'</nav>'+todoMemberPick()+'</div>'
   +(state.todoError?'<p class="ai-bad" role="alert">'+esc(state.todoError)+'</p>':'')
-  +(shown.length?'<ul class="todo-list" aria-label="'+({today:'오늘',next:'예정',all:'전체'}[tab])+' 할 일">'+shown.map(todoCard).join('')+'</ul>':'<p class="muted todo-empty">'+(tab==='next'?'예정된 할 일이 없어요.':open.length?'오늘 할 일을 모두 마쳤어요.':'할 일이 없어요. 위 칸에 적고 Enter 를 누르세요.')+'</p>')
+  +(shown.length?'<ul class="todo-list" aria-label="'+T('{0} 할 일',T({today:'오늘',next:'예정',all:'전체'}[tab]))+'">'+shown.map(todoCard).join('')+'</ul>':'<p class="muted todo-empty">'+(tab==='next'?'예정된 할 일이 없어요.':open.length?'오늘 할 일을 모두 마쳤어요.':'할 일이 없어요. 위 칸에 적고 Enter 를 누르세요.')+'</p>')
   +'<details id="todoCompleted" class="todo-completed"'+(state.todoCompleted?' open':'')+'><summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>오늘 완료 <span>'+done.length+'</span></summary>'+(done.length?'<ul class="todo-list">'+done.map(todoCard).join('')+'</ul>':'<p class="muted">아직 완료한 일이 없어요.</p>')+'</details>'
   +(state.todoAiOpen?'<aside id="todoAi" class="todo-ai" aria-labelledby="todoAiTitle"><div class="todo-ai-heading"><h2 id="todoAiTitle">AI로 정리</h2><button type="button" class="icon-button" data-action="todoAiClose" aria-label="AI 정리 닫기">'+icon('close')+'</button></div>'+todoTidyView()+'</aside>':'')+'</section>';
 }
 // 세부 포스트잇 (마스터 요청 2026-11-18) — 카드 제목을 누르면 열린다. 적는 칸 + 하위 항목. 항목을 누르면 그 안으로(드릴다운),
 // 위 경로를 누르면 밖으로(드릴업). 3단까지. 적은 내용은 손을 멈추면 저장한다 — 다시 그리지 않아 적던 자리가 그대로다.
 function postitView(n) {
- const crumbs=n.path.map((p,i)=>i===n.path.length-1?'<li aria-current="page">'+esc(p.title)+'</li>':'<li><button type="button" class="text-button" data-action="noteGo" data-node="'+esc(p.node)+'">'+esc(p.title)+'</button></li>').join('');
- const kids=n.children.map(k=>'<li class="postit-item'+(k.done?' done':'')+'"><button type="button" class="todo-check" role="checkbox" aria-checked="'+k.done+'" aria-label="'+esc(k.title)+(k.done?' 완료 취소':' 완료')+'" data-action="noteToggle" data-item="'+esc(k.id)+'"><span>'+(k.done?icon('confirm'):'')+'</span></button>'
-  +'<button type="button" class="postit-open" data-action="noteGo" data-node="'+esc(k.id)+'"><span>'+esc(k.title)+'</span>'+(k.count?'<small>'+k.count+'</small>':'')+'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>'
-  +'<button type="button" class="text-button postit-del" data-action="noteDelete" data-item="'+esc(k.id)+'" aria-label="'+esc(k.title)+' 지우기">지우기</button></li>').join('');
+ const crumbs=n.path.map((p,i)=>i===n.path.length-1?'<li aria-current="page">'+raw(p.title)+'</li>':'<li><button type="button" class="text-button" data-action="noteGo" data-node="'+esc(p.node)+'">'+raw(p.title)+'</button></li>').join('');
+ const kids=n.children.map(k=>'<li class="postit-item'+(k.done?' done':'')+'"><button type="button" class="todo-check" role="checkbox" aria-checked="'+k.done+'" aria-label="'+esc(k.title+' · '+T(k.done?'완료 취소':'완료'))+'" data-raw data-action="noteToggle" data-item="'+esc(k.id)+'"><span>'+(k.done?icon('confirm'):'')+'</span></button>'
+  +'<button type="button" class="postit-open" data-action="noteGo" data-node="'+esc(k.id)+'">'+raw(k.title)+''+(k.count?'<small>'+k.count+'</small>':'')+'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>'
+  +'<button type="button" class="text-button postit-del" data-action="noteDelete" data-item="'+esc(k.id)+'" aria-label="'+esc(T('{0} 지우기',k.title))+'" data-raw>'+T('지우기')+'</button></li>').join('');
  return '<div id="todoNote" class="postit-fold'+(noteMotion.fresh?'':' open')+'"><div class="postit-clip"><section class="postit'+(noteMotion.drill?' drill-'+noteMotion.drill:'')+'" aria-labelledby="noteTitle"><div class="postit-head">'
   +(n.depth?'<button type="button" class="icon-button" data-action="noteGo" data-node="'+esc(n.path[n.path.length-2].node)+'" data-dir="out" aria-label="한 단계 밖으로">'+icon('back')+'</button>':'')
   +'<h2 id="noteTitle" tabindex="-1">'+(n.depth?esc(n.path[n.path.length-1].title):'세부 내용')+'</h2><button type="button" class="icon-button" data-action="noteClose" aria-label="세부 내용 접기">'+icon('close')+'</button></div>'
@@ -1059,7 +1066,7 @@ async function todoSet(method,args) {try{state.todos=await api(method,args);load
 function todoSnooze(a) {
  const id=a.dataset.id,c=state.todos.find(x=>x.id===id),now=new Date();
  const opts=[['1시간 뒤',new Date(now.getTime()+3600e3)],['내일 아침 9시',at9(now,1)],['다음 주 월요일 9시',at9(now,((8-now.getDay())%7)||7)]];
- const d=modal(heading('미루기')+'<p class="dialog-copy"><b>'+esc(c.title)+'</b> — 언제 다시 알려 드릴까요?</p><div class="actions todo-when">'
+ const d=modal(heading('미루기')+'<p class="dialog-copy"><b>'+raw(c.title)+'</b> '+T('— 언제 다시 알려 드릴까요?')+'</p><div class="actions todo-when">'
   +opts.map(([t,w])=>'<button type="button" class="button ghost" data-when="'+local(w)+'">'+t+'</button>').join('')+'</div>'
   +'<label for="todoAt">직접 고르기</label><div class="todo-at"><input id="todoAt" type="datetime-local" value="'+local(at9(now,1))+'"><button type="button" class="button primary" id="todoAtGo">이때 알림</button></div><p id="dialogError" role="alert"></p>');
  let busy=false;const go=async w=>{if(busy)return;busy=true;try{state.todos=await api('todo_snooze',{card_id:id,until:w});loadTodos.last=JSON.stringify(state.todos)+ymd(new Date());todoBadge();d.close();render();toast('미뤘어요. '+md(w)+' '+w.slice(11,16)+' 에 다시 알려 드려요.');}catch(e){busy=false;dialogError(e.message);}};
@@ -1084,7 +1091,7 @@ async function phoneOpen(start) {
 }
 function todoDelete(a) {
  const id=a.dataset.id,c=state.todos.find(x=>x.id===id);
- const d=modal(heading('할 일 지우기')+'<p class="dialog-copy"><b>'+esc(c.title)+'</b> 를 지울까요? 되돌릴 수 없어요.</p><div class="actions"><button type="button" class="button primary" id="todoDelGo">지우기</button></div>');
+ const d=modal(heading('할 일 지우기')+'<p class="dialog-copy"><b>'+raw(c.title)+'</b> '+T('를 지울까요? 되돌릴 수 없어요.')+'</p><div class="actions"><button type="button" class="button primary" id="todoDelGo">지우기</button></div>');
  $('#todoDelGo').onclick=async()=>{d.close();await todoSet('todo_delete',{card_id:id});};
 }
 function modal(html,wide=false) {
@@ -1101,9 +1108,9 @@ async function openShare(id) {
  const cur=all[id]||{restricted:false,people:[]},pals=friends.filter(f=>f.state==='accepted');
  const people=new Map(cur.people.map(p=>[p.account_id,p.handle]));let restricted=cur.restricted;
  const who=h=>h?'@'+h:'메신저 아이디 없음';
- const d=modal('<form id="shareForm" class="share">'+heading('\u2018'+r.name+'\u2019 공유')
+ const d=modal('<form id="shareForm" class="share">'+heading(T('‘{0}’ 공유',VaderI18n.rune(id,r.name)))
   +'<div class="share-add"><input id="shareFind" list="shareList" autocomplete="off" placeholder="친구 또는 그룹 추가" aria-label="친구 또는 그룹 추가"><datalist id="shareList">'
-  +groups.filter(g=>g.count).map(g=>'<option value="그룹 · '+esc(g.name)+'">'+g.count+'명</option>').join('')
+  +groups.filter(g=>g.count).map(g=>'<option value="그룹 · '+esc(g.name)+'" data-raw>'+T('{0}명',g.count)+'</option>').join('')
   +pals.map(f=>'<option value="@'+esc(f.handle)+'"></option>').join('')+'</datalist><button type="button" class="button ghost" id="shareAddBtn">'+icon('plus')+'추가</button></div>'
   +'<p class="small share-msg" id="shareMsg" role="status"></p>'
   +'<h3 class="share-h">액세스 권한이 있는 사람</h3><ul class="share-people" id="sharePeople"></ul>'
@@ -1127,7 +1134,7 @@ async function openShare(id) {
  $('#sharePeople',d).onclick=e=>{const b=e.target.closest('[data-drop]');if(b){people.delete(b.dataset.drop);draw();}};
  $('#shareScope',d).onchange=e=>{restricted=e.target.value==='restricted';draw();};
  $('#shareForm',d).onsubmit=async e=>{e.preventDefault();
-  try{await api('market_share_save',{rune_id:id,restricted,accounts:[...people.keys()]});d.close();toast('\u2018'+r.name+'\u2019 공유 설정을 저장했어요.');}
+  try{await api('market_share_save',{rune_id:id,restricted,accounts:[...people.keys()]});d.close();toast(T('‘{0}’ 공유 설정을 저장했어요.',VaderI18n.rune(id,r.name)));}
   catch(err){$('#shareMsg',d).textContent=err.message;}};
  draw();$('#shareFind',d).focus();
 }
@@ -1207,7 +1214,7 @@ function renderAi() {
    ?(open?keyForm('연결'):button('aiOpenCard','연결하기','arrow','ghost').replace('data-action="aiOpenCard"','data-action="aiOpenCard" data-id="'+esc(c.id)+'"'))
    :(c.recommended&&c.state==='fix'?button('aiRecommend','권장 모델로 연결 확인','link','primary').replace('data-action="aiRecommend"','data-action="aiRecommend" data-id="'+esc(c.id)+'"')+'<p class="small muted">권장: '+esc(c.recommended)+'</p>':'')
     +'<details class="ai-advanced"'+(open?' open':'')+'><summary>고급</summary><div class="settings-field"><label for="m-'+esc(c.id)+'">모델</label><div><input id="m-'+esc(c.id)+'" data-ai-model="'+esc(c.id)+'" value="'+esc(c.model)+'" autocomplete="off" spellcheck="false">'+button('aiCheck','연결 확인','link','ghost').replace('data-action="aiCheck"','data-action="aiCheck" data-id="'+esc(c.id)+'"')+'</div></div><p class="small muted">키 바꾸기'+(c.shared>1?' — 이 키를 쓰는 모델 '+c.shared+'개에 함께 적용돼요':'')+'</p>'+(c.keyless?'':keyForm('새 키로 연결'))+'<button type="button" class="text-button danger" data-action="aiDisconnect" data-id="'+esc(c.id)+'">'+(c.shared>1?(aiArmed===c.id?'한 번 더 누르면 이 모델을 지워요 (키는 남아요)':'이 모델 지우기'):(aiArmed===c.id?'한 번 더 누르면 연결을 끊어요':'연결 끊기'))+'</button></details>');
-  return (c.keyless?'\u0001':'')+'<article class="ai-svc '+c.state+(c.is_default?' default':'')+'"><div class="ai-svc-head"><span class="ai-svc-name"><strong>'+esc(c.service)+'</strong><small>'+(c.state==='off'?'':esc(c.model))+'</small></span>'+star+'<span class="chip '+tone+'">'+st+'</span>'+(AI_NOTICE[c.id]?aiNotice(c.id):'')+'</div><p class="ai-can">'+esc(c.id==='agy_console'?'설치 · 로그인 · 룬 만들기':c.can.join(' · '))+'</p>'+(c.state==='fix'?'<p class="small ai-bad">'+esc(c.state_text)+'</p>':c.state==='on'?'<p class="small muted">'+esc(c.state_text)+'</p>':'')+body+(m?'<p class="small '+(m.ok?'ai-ok':m.ok===false?'ai-bad':'muted')+'" role="status">'+esc(m.text)+'</p>':'')+'</article>';
+  return (c.keyless?'\u0001':'')+'<article class="ai-svc '+c.state+(c.is_default?' default':'')+'"><div class="ai-svc-head"><span class="ai-svc-name"><strong>'+esc(c.service)+'</strong><small>'+(c.state==='off'?'':esc(c.model))+'</small></span>'+star+'<span class="chip '+tone+'">'+st+'</span>'+(AI_NOTICE[c.id]?aiNotice(c.id):'')+'</div><p class="ai-can">'+esc(c.id==='agy_console'?T('설치 · 로그인 · 룬 만들기'):c.can.map(x=>T(x)).join(' · '))+'</p>'+(c.state==='fix'?'<p class="small ai-bad">'+esc(c.state_text)+'</p>':c.state==='on'?'<p class="small muted">'+esc(c.state_text)+'</p>':'')+body+(m?'<p class="small '+(m.ok?'ai-ok':m.ok===false?'ai-bad':'muted')+'" role="status">'+esc(m.text)+'</p>':'')+'</article>';
  });
  // 터미널 AI(이 PC 에 로그인된 프로그램, 키 없음) / API AI(키) 를 나눠 보인다 (마스터 2026-11-19)
  const term=cards.filter(x=>x.startsWith('\u0001')).map(x=>x.slice(1)).join(''),apis=cards.filter(x=>!x.startsWith('\u0001')).join('')+aiAddCard();
@@ -1420,14 +1427,21 @@ $('#aiButton').onclick=()=>openAssignments().catch(e=>toast(e.message));
 // ── 앱 로그인: 머리의 버튼이 로그인 상태를 보여 준다. 토큰은 코어(DPAPI)에만, 화면은 이름만 안다 ──
 // 로그인은 문(gate.html)에서만. 여기서는 계정을 보고 로그아웃만 — 로그아웃하면 앱이 닫힌다 (2단계, 작업공간은 프로세스마다 하나).
 let acct={signed_in:false};
-const acctLabel=()=>{const t=acct.account?acct.account.display_name||'로그인됨':acct.signed_in?'로그인 확인 필요':'로그인';$('#accountButton .rail-label').textContent=t;$('#accountButton').title=acct.account?t+' · 계정':'웹 계정으로 이 PC 를 연결합니다';};
+const acctLabel=()=>{const t=acct.account?acct.account.display_name||'로그인됨':acct.signed_in?'로그인 확인 필요':'로그인';$('#accountButton .rail-label').textContent=t;$('#accountButton .rail-label').toggleAttribute('data-raw',!!acct.account?.display_name);$('#accountButton').title=acct.account?VaderI18n.t('{0} · 계정',t):'웹 계정으로 이 PC 를 연결합니다';};
 async function refreshAccount() {try{acct=await api('account_status');}catch{acct={signed_in:false};}acctLabel();}
-function openAccount() {
- const a=acct.account;
- const d=modal(heading('계정')+(a?'<p class="dialog-copy"><b>'+esc(a.display_name||'이름 없음')+'</b> 계정으로 이 PC 가 연결되어 있어요.'+(a.providers&&a.providers.length?' 로그인 방법: '+esc(a.providers.map(p=>p==='kakao'?'카카오':'Google').join(' · ')):'')+'</p><p class="small muted">자동화 패키지 받기 · '+(a.catalog_access?'허용됨':'아직 허용되지 않았어요 (운영자에게 요청)')+'</p>'
+async function openAccount() {
+ const a=acct.account;let auto=true;try{auto=(await api('auto_online')).on;}catch{}
+ const d=modal(heading('계정')+(a?'<p class="dialog-copy">'+VaderI18n.t('{0} 계정으로 이 PC 가 연결되어 있어요.','<b data-raw>'+esc(a.display_name||VaderI18n.t('이름 없음'))+'</b>')+(a.providers&&a.providers.length?' '+VaderI18n.t('로그인 방법:')+' '+esc(a.providers.map(p=>p==='kakao'?VaderI18n.t('카카오'):'Google').join(' · ')):'')+'</p><p class="small muted">'+VaderI18n.t('자동화 패키지 받기 · {0}',VaderI18n.t(a.catalog_access?'허용됨':'아직 허용되지 않았어요 (운영자에게 요청)'))+'</p>'
   :acct.error?'<p class="dialog-copy">'+esc(acct.error)+'</p>'
   :'<p class="dialog-copy">계정 연결을 확인하지 못했어요. 인터넷 연결을 확인해 주세요.</p>')
+  // 자동 온라인 확인 끄기 — 개인정보 처리방침의 '끄는 방법' (SignPath 조건, 2026-11-24)
+  +'<p class="dialog-copy"><label><input type="checkbox" id="autoOnline"'+(auto?' checked':'')+'> 자동 온라인 확인</label></p><p class="small muted">켜 두면 앱 새 버전과 광장 목록(회수·만료 안내 포함)을 알아서 확인해요. 끄면 앱 업데이트는 받지 않고, 광장은 새로 고침을 누를 때만 확인해요 — 그 사이 회수된 패키지는 모르고 실행될 수 있어요.</p>'
+  // 표시 언어 (2026-11-24 영문판) — 기기 설정에 두고 화면을 다시 그린다. 처음 값은 Windows 표시 언어
+  +'<p class="dialog-copy"><label>'+VaderI18n.t('표시 언어')+' <select id="appLang" class="select"><option value="ko" lang="ko">한국어</option><option value="en" lang="en">English</option></select></label></p>'
   +'<p class="small muted">로그아웃하면 앱이 닫혀요. 다른 계정은 앱을 다시 켠 뒤 로그인하세요.</p><p id="dialogError" role="alert"></p><div class="actions"><button type="button" class="button" id="acctWeb">로그인 방법 관리 (웹)</button><button type="button" class="button ghost" id="acctOut">로그아웃</button></div>');
+ $('#appLang').value=VaderI18n.lang;
+ $('#appLang').onchange=async e=>{try{await api('set_app_lang',{lang:e.currentTarget.value});location.reload();}catch(err){dialogError(err.message);}};
+ $('#autoOnline').onchange=async e=>{const box=e.currentTarget;try{box.checked=(await api('set_auto_online',{on:box.checked})).on;}catch(err){box.checked=!box.checked;dialogError(err.message);}};
  $('#acctWeb').onclick=()=>api('account_web').catch(err=>dialogError(err.message));   // 구글·카카오 연결, 계정 합치기
  $('#acctOut').onclick=async e=>{const btn=e.currentTarget;btn.disabled=true;btn.textContent='로그아웃하는 중…';try{await api('account_logout');}catch(err){btn.disabled=false;btn.textContent='로그아웃';dialogError(err.message);}};
 }
@@ -1447,8 +1461,7 @@ window.VaderUI={notice:toast,recordingEnded,resumeGraph,receiveDrop(paths){
 render();
 // 만드는 프로그램 창에서 돌아오면 시험 요청을 다시 본다 — 따로 묻지 않아도 요청이 보이게.
 window.addEventListener('focus',async()=>{if(!state.devMode||!state.connected||$('#settingsDialog').open)return;try{catalog(await api('catalog'));render();}catch(e){}});
-window.addEventListener('pywebviewready',connect);
-if(window.pywebview?.api)connect();
+VaderI18n.ready.then(connect);   // i18n.js 가 코어 연결(pywebviewready)과 언어를 확인한 뒤 한 번
 // 화면 자동화 승인 카드 — AI 가 제안한 조작 하나. 글자는 textContent 로만, 승인은 이 창에서만 (codex1 화면 2단계 계약 3)
 let screenAsk=null,screenDone=null;
 async function watchScreen() {
@@ -1485,10 +1498,10 @@ async function watchPlan() {
   const ask=c?.kind==='ask'&&c.id!==planDone?c:null;
   if(!ask){if(d.open&&planAsk)d.close();planAsk=null;}
   else{
-   if(planAsk?.id!==ask.id){planAsk=ask;d.querySelector('[data-f="app"]').textContent='앱: '+ask.app+' · '+ask.minutes+'분 동안';
+   if(planAsk?.id!==ask.id){planAsk=ask;d.querySelector('[data-f="app"]').textContent=T('앱: {0} · {1}분 동안',ask.app,ask.minutes);d.querySelector('[data-f="app"]').dataset.raw='';
     const ol=d.querySelector('.plan-steps');ol.replaceChildren();
     for(const s of ask.steps){const li=document.createElement('li');
-     li.textContent=s.target+' · '+s.action+(s.value!=null?' · 값: '+s.value:'')+(s.confirm?' · 다시 확인':' · 바로 진행');ol.append(li);}
+     li.dataset.raw='';li.textContent=s.target+' · '+s.action+(s.value!=null?' '+T('· 값: {0}',s.value):'')+' '+T(s.confirm?'· 다시 확인':'· 바로 진행');ol.append(li);}
     if(!d.open)d.showModal();}
    d.querySelector('[data-f="left"]').textContent=ask.left+'초 안에 정하지 않으면 버려져요.';
   }

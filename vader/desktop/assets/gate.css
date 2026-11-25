@@ -18,3 +18,7 @@ body{display:grid;grid-template-columns:minmax(0,1fr);place-items:center;padding
 .gate-link:hover{color:var(--text)}
 .gate-note{margin:28px 0 0;color:var(--muted);font-size:12px;line-height:1.6}
 .gate.busy{cursor:progress}
+.gate-notice{display:flex;flex-direction:column;gap:6px;margin-top:24px}
+.gate-check{display:flex;align-items:center;justify-content:center;gap:10px;font-size:14px;color:var(--text)}
+.gate-check input{width:18px;height:18px;accent-color:var(--red)}
+.gate-notice+#gateAction{margin-top:16px}

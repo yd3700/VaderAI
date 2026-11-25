@@ -66,8 +66,9 @@ def test_samples_merge_by_phone_and_ask_only_the_unsure_one(tmp_path):
 
 
 def test_without_a_setting_it_asks_the_key_and_both_keeps_the_unsure_row(tmp_path):
-    result, ctx = run(tmp_path, {}, [UserActionResponse("ok", "전화"), UserActionResponse("abort")])
-    assert ctx.asked[0].options == ["이름", "전화", "이메일", "모든 칸"]   # 모든 파일에 있는 칸만
+    result, ctx = run(tmp_path, {}, [UserActionResponse("ok", "열: 전화"), UserActionResponse("abort")])
+    from table_merge.rune import WHOLE
+    assert ctx.asked[0].options == ["열: 이름", "열: 전화", "열: 이메일", WHOLE]   # 모든 파일에 있는 칸만(종류를 글자로) + 전체
     assert not result.ok and "이어서" in result.failures[0].message
     again, ctx2 = run(tmp_path, {"기준열": "전화"}, [UserActionResponse("ok", "둘 다 남기기")])
     assert again.ok and again.summary["통합본 행"] == 9
@@ -96,3 +97,38 @@ def test_one_empty_key_part_keeps_the_row_and_only_phone_columns_drop_punctuatio
     result = TableMerge().run(ctx, [table(src, "a.csv", rows)])
     assert result.ok and not ctx.asked
     assert result.summary["통합본 행"] == 3 and result.summary["기준 칸 빈 행 제외"] == 0 and result.summary["중복 제외"] == 1
+
+
+def test_a_column_named_like_the_all_choice_can_still_be_chosen_alone(tmp_path):
+    """열은 '열: 이름', 전체는 '모든 열 비교' — '모든 칸' 이라는 열도 그 열 하나로 고른다 (codex1 영문판 A·4·5 3·5차)."""
+    from table_merge.rune import ALL, WHOLE, TableMerge, column
+
+    columns = ["모든 칸", "전화"]
+    tables_ = [("a.xlsx", columns, []), ("b.xlsx", columns, [])]
+    at = {column(c): i for i, c in enumerate(columns)}
+    one = Ctx(tmp_path, {}, [UserActionResponse("ok", "열: 모든 칸")])
+    assert TableMerge.key_columns(one, tables_, columns, at) == [0]          # 그 열 하나
+    assert one.asked[0].options == ["열: 모든 칸", "열: 전화", WHOLE]
+    every = Ctx(tmp_path, {}, [UserActionResponse("ok", WHOLE)])
+    assert TableMerge.key_columns(every, tables_, columns, at) is None       # 전체 칸
+    assert TableMerge.key_columns(Ctx(tmp_path, {"기준열": ALL}, []), tables_, columns, at) is None   # 설정의 '모든 칸' 은 그대로 전체
+
+
+def test_a_column_literally_named_like_the_whole_choice_keeps_its_own_meaning(tmp_path):
+    """열 이름이 '(모든 칸)' 이어도 — 그 열을 고르면 그 열로, 전체를 고르면 전체로 비교하고 요약도 다르게 보인다 (codex1 영문판 4·5차)."""
+    from table_merge.rune import WHOLE, TableMerge
+
+    src = tmp_path / "in"
+    src.mkdir()
+    a = tables.write_table(src, "a.xlsx", [["(모든 칸)", "other"], ["1", "A"]])
+    b = tables.write_table(src, "b.xlsx", [["(모든 칸)", "other"], ["1", "B"]])
+    def merge(answers):
+        out = tmp_path / f"out{len(answers)}"
+        out.mkdir()
+        ctx = Ctx(out, {}, answers)
+        return TableMerge().run(ctx, [Input(path=Path(a)), Input(path=Path(b))]), ctx
+    by_column, ctx = merge([UserActionResponse("ok", "열: (모든 칸)"), UserActionResponse("ok", "앞의 것 유지")])
+    assert ctx.asked[0].options == ["열: (모든 칸)", "열: other", WHOLE]
+    assert by_column.summary["통합본 행"] == 1 and by_column.summary["기준"] == "열: (모든 칸)"
+    by_all, _ = merge([UserActionResponse("ok", WHOLE)])
+    assert by_all.summary["통합본 행"] == 2 and by_all.summary["기준"] == WHOLE

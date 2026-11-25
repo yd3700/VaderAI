@@ -8,7 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from threading import RLock
 
-from vader.core import ai_choice, clients, config, installer, screen, seal, signing, workshop
+from vader.core import ai_choice, clients, config, installer, rune_text, screen, seal, signing, workshop
 from vader.core import catalog as trust_catalog
 from vader.core.events import UserActionRequested
 from vader.core.installer import install, install_package, preview, uninstall
@@ -66,7 +66,9 @@ class DesktopController:
                               'mapping': callable(getattr(rune.rune, 'mapping_maintenance', None)),
                               'recordings': sorted(p.stem for p in (config.rune_dir() / key / 'recordings').glob('*.json')),
                               # 룬에 실린 연습용 샘플 — 파일 없이 [샘플로 연습] (기본 룬 2026-11-19)
-                              'samples': list(self._samples(key))})
+                              'samples': list(self._samples(key)),
+                              # 화면 문구의 영어 — 그 버전 룬 패키지 안 i18n_en.py, 실행하지 않고 값만 (영문판 5단계 후속)
+                              'i18n_en': rune_text.load(config.rune_dir() / key)})
             dev = config.get('workshop.dev_mode') is True
             return {'runes': items, 'failures': self.failures, 'dev_mode': dev,
                     'clients': clients.status() if dev else [], 'console': self.console.status(),
@@ -146,6 +148,14 @@ class DesktopController:
         from vader.core import publisher
         renew = publisher.renewal_notice()      # 서명 PC 에만 원장이 있다
         return {'catalog_notices': trust_catalog.notices() + ([renew] if renew else []), 'exit_required': exit_required}
+
+    def auto_online(self):
+        return {'on': config.auto_online()}
+
+    def set_auto_online(self, on):
+        """자동 업데이트 확인·광장 목록 자동 받기. 끄면 광장의 [새로 고침]·받기는 누를 때만 통신한다."""
+        config.device_set('network.auto_online', None if on else False)
+        return self.auto_online()
 
     def set_dev_mode(self, on):
         """룬 제작소 개발 모드 — 켜져 있을 때만 MCP 시험이 만든 룬 코드를 돌린다. 보안 경계는 아니다."""

@@ -40,6 +40,7 @@ def test_anything_else_is_refused(manifest, sig, info, why):
 def test_updates_stay_off_until_an_update_key_ships(monkeypatch):
     """서명 키가 없는 판은 어떤 피드든 켜지 않는다 — 기기 설정의 다른 주소로도 (codex1 구현 2차 P1)."""
     started = []
+    monkeypatch.setattr(update.config, "auto_online", lambda: True)
     monkeypatch.setattr(update.config, "FROZEN", True)
     monkeypatch.setattr(update, "feed", lambda: "https://example.invalid/other-feed")
     monkeypatch.setattr(update, "Thread", lambda **k: started.append(k) or NS(start=lambda: None))

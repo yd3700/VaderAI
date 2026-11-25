@@ -116,16 +116,17 @@ async fn call(
     webview: tauri::Webview,
     worker: tauri::State<'_, Arc<Worker>>,
 ) -> Result<Value, String> {
-    // 앱 안 화면, 정해진 창만. 녹화 배지(badge-<번호>)는 끝내기 하나만, 그 창이 만들어질 때의 번호로 (codex1 r1, r5 P2-1).
+    // 앱 안 화면, 정해진 창만. 녹화 배지(badge-<번호>)는 끝내기와 화면 언어 읽기만, 그 창이 만들어질 때의 번호로 (codex1 r1, r5 P2-1).
     let label = webview.label().to_string();
     let badge_rec = label.strip_prefix("badge-").and_then(|n| n.parse::<u64>().ok());
-    let allowed = label == "main" || (badge_rec.is_some() && method == "record_end");
+    let allowed = label == "main" || (badge_rec.is_some() && (method == "record_end" || method == "app_lang"));
     if !allowed || !webview.url().map(|u| ours(&u)).unwrap_or(false) {
         return Err("허용되지 않은 화면".into());
     }
     // 배지의 끝내기는 화면이 보낸 값이 아니라 그 창 라벨의 번호로
     let args = match badge_rec {
-        Some(rec) => Some(json!({ "rec": rec })),
+        Some(rec) if method == "record_end" => Some(json!({ "rec": rec })),
+        Some(_) => None,
         None => args,
     };
     let id = worker.next.fetch_add(1, Ordering::SeqCst);

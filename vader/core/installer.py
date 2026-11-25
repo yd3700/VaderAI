@@ -20,7 +20,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from vader.core import config, permissions, profile, seal
+from vader.core import config, permissions, profile, rune_text, seal
 from vader.core.loader import LoadFailure, _load_package, _validate_module, purge_modules
 from vader.sdk import RuneManifest
 
@@ -370,6 +370,7 @@ def preview(chosen: Path) -> dict:
         declared = _declared(source)
         return {"id": _manifest_string(source, "id") or source.name, "name": _manifest_string(source, "name"),
                 "version": _manifest_string(source, "version"), "fingerprint": seal.fingerprint(source),
+                "i18n_en": rune_text.load(source),   # 후보 패키지의 화면 문구 영어 — 설치된 것과 섞지 않는다
                 "profile": "table" if profile.declared(source) == profile.PROFILE else "legacy",
                 "signature": _signature(chosen) if zipped else {"state": "none"},
                 "tested": _tested(chosen) if zipped else None,

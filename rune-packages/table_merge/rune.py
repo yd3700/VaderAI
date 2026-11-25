@@ -14,6 +14,11 @@ from re import split, sub
 from vader.sdk import Failure, RuneField, RuneManifest, RuneResult, UserActionRequest
 
 ALL = "모든 칸"
+#: 묻는 화면·결과 요약에서 선택의 **종류**를 글자로 드러낸다 — 열은 언제나 '열: 이름', 전체는 '모든 열 비교'.
+#: 열 이름이 무엇이든('모든 열 비교' 라도) 화면·화면 낭독기에서 둘이 같아 보이지 않는다 (codex1 영문판 5차).
+#: 설정 값 '모든 칸' 은 전처럼 전체.
+WHOLE = "모든 열 비교"
+COLUMN = "열: "
 KEEP, REPLACE, BOTH, KEEP_REST = "앞의 것 유지", "뒤의 것으로 바꾸기", "둘 다 남기기", "남은 것도 모두 앞의 것 유지"
 
 
@@ -50,7 +55,7 @@ def column(name) -> str:
 
 class TableMerge:
     manifest = RuneManifest(
-        id="table_merge", name="표 합치기·중복 정리", version="1.0.0", profile="table",
+        id="table_merge", name="표 합치기·중복 정리", version="1.0.1", profile="table",
         required_fields=[RuneField("기준열", label="같은 건으로 볼 칸 (예: 전화 · 여럿이면 쉼표 · 비우면 실행할 때 물어요)",
                                    default="", optional=True)],
     )
@@ -162,7 +167,7 @@ class TableMerge:
         summary = {"합친 파일": len(tables), "읽은 행": total, "통합본 행": len(kept),
                    "중복 제외": len(dropped) - empty, "기준 칸 빈 행 제외": empty,
                    "사람이 확인한 행": len(unsure), "다른 파일 값으로 채운 칸": filled,
-                   "기준": ALL if whole else ", ".join(columns[i] for i in keys)}
+                   "기준": WHOLE if whole else COLUMN + ", ".join(columns[i] for i in keys)}
         ctx.log("info", "표 합치기 완료", **summary)
         return RuneResult(ok=True, artifacts=artifacts, summary=summary)
 
@@ -174,13 +179,17 @@ class TableMerge:
             common = [c for c in columns if all(column(c) in {column(h) for h in header} for _, header, _ in tables)]
             answer = ctx.request_user_action(UserActionRequest(
                 kind="choice", prompt="어느 칸이 같으면 같은 건으로 볼까요? (전화·이메일처럼 건마다 다른 칸이 좋아요)",
-                options=[*common, ALL], context={"합칠 파일": ", ".join(n for n, _, _ in tables)}))
+                options=[*(COLUMN + c for c in common), WHOLE], context={"합칠 파일": ", ".join(n for n, _, _ in tables)}))
             if answer.action == "abort":
                 return RuneResult(ok=False, failures=[Failure("stopped", "기준 칸을 고르지 않아 멈췄어요.")])
-            chosen = str(answer.value) if answer.action == "ok" else ALL
-        if chosen == ALL:
+            picked = str(answer.value)
+            if answer.action != "ok" or picked == WHOLE:
+                return None
+            names = [picked[len(COLUMN):] if picked.startswith(COLUMN) else picked]   # 고른 열 하나 그대로 — 쉼표가 든 이름도 나누지 않는다
+        elif chosen == ALL:
             return None
-        names = [c.strip() for c in split(r"[,，]", chosen) if c.strip()]
+        else:
+            names = [c.strip() for c in split(r"[,，]", chosen) if c.strip()]
         missing = [c for c in names if column(c) not in at]
         if missing:
             return RuneResult(ok=False, failures=[Failure("setting", f"'{', '.join(missing)}' 칸이 없어요. 있는 칸: {', '.join(columns)}")])

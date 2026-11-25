@@ -102,7 +102,7 @@ def save_share(rune_id: str, restricted: bool, accounts: list[str]) -> dict:
 
 def refresh_if_due() -> None:
     """화면이 자주 묻는 자리에서 부른다 — 때가 됐고 아무도 받고 있지 않을 때만 뒤에서 한 번."""
-    if not enabled() or time.time() < _last["next"] or not _running.acquire(blocking=False):
+    if not enabled() or not config.auto_online() or time.time() < _last["next"] or not _running.acquire(blocking=False):
         return
 
     def run():

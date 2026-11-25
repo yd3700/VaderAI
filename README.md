@@ -1,29 +1,33 @@
 # VaderAI
 
-**중간에 끊겨도, 다시 돌려도, 중복은 없습니다.**
-*Interrupted or re-run, nothing is entered twice.*
+English · [한국어](README.ko.md)
 
-VaderAI는 Windows 데스크톱의 **업무대행 RPA**입니다. 엑셀·CSV·PDF와 오래된 사무 프로그램에 사람이 반복하던 입력을,
-사람이 확인하고 승인한 **업무 패키지**가 대신합니다.
+**Interrupted or re-run, nothing is entered twice.**
 
-- **이어하기** — 중간에 끊기면 끊긴 자리부터 다시 합니다.
-- **중복 방지** — 같은 입력을 다시 넣어도 같은 건을 두 번 처리하지 않도록 기록합니다(업무 패키지가 체크포인트를 쓰는 범위에서).
-- **연습 먼저** — 실제로 넣기 전에 연습 실행으로 결과를 봅니다. 실사용 승인은 사람만 합니다.
-- **허용한 창만** — 화면 자동화는 사람이 허용한 앱 창에서만, 조작은 승인 카드로 한 번씩.
-- **로컬 실행** — 파일과 화면 처리는 이 PC에서 합니다. 데스크톱 앱의 코드는 이 저장소에 공개되어 있습니다.
+VaderAI is **work-delegation RPA** for the Windows desktop. Repetitive data entry that people used to do by hand —
+from Excel, CSV and PDF files into older office programs — is handled by **work packages** that a person has checked and approved.
 
-업무 패키지는 평소 쓰는 AI(Claude Code·Codex 등)로 만들 수 있습니다 — 앱에 포함된 MCP 도구가 만들기·시험·포장을 돕고,
-설치와 실사용 승인은 VaderAI 화면에서 사람이 합니다.
+- **Resume** — if a run is interrupted, it picks up where it stopped.
+- **No duplicates** — it records what it processed so the same item is not handled twice when the same input comes in again (within the range a work package checkpoints).
+- **Practice first** — a practice run shows the result before anything is entered for real. Only a person approves real use.
+- **Only allowed windows** — screen automation works only in app windows a person has allowed, one approval card per action.
+- **Runs locally** — files and screens are processed on your PC. The desktop app's code is public in this repository.
 
-## 설치
+Work packages can be built with the AI you already use (Claude Code, Codex and others): MCP tools bundled with the app help
+build, test and pack them, and a person installs and approves them for real use in the VaderAI window.
 
-[Releases](../../releases)에서 `VaderAI-win-Setup.exe`를 받아 실행합니다. 설치 뒤에는 앱이 스스로 업데이트를 받습니다.
-제거는 Windows **설정 → 앱 → 설치된 앱 → VaderAI → 제거**에서 합니다.
-코드 서명은 [CODE_SIGNING.md](CODE_SIGNING.md)를 보세요.
+> **Language:** the app's screens are in Korean today; English is in preparation. The website is available in
+> [English](https://vaderai-web.vercel.app/en/) and Korean.
 
-## 직접 빌드
+## Install
 
-Windows 10/11, Python 3.11+, Rust(rustup), .NET SDK(`dotnet tool install -g vpk`)가 필요합니다.
+Download `VaderAI-win-Setup.exe` from [Releases](../../releases) and run it. After installation the app updates itself.
+To uninstall, go to Windows **Settings → Apps → Installed apps → VaderAI → Uninstall**.
+See the [Code signing policy](CODE_SIGNING.md).
+
+## Build it yourself
+
+You need Windows 10/11, Python 3.11+, Rust (rustup) and the .NET SDK (`dotnet tool install -g vpk`).
 
 ```powershell
 python -m venv .venv-desktop; .venv-desktop\Scripts\pip install -e .[desktop] pyinstaller velopack
@@ -31,14 +35,16 @@ python -m venv .venv-desktop; .venv-desktop\Scripts\pip install -e .[desktop] py
 powershell -File packaging\build.ps1 -Version 0.1.0
 ```
 
-## 온라인 기능과 개인정보
+## Online features and privacy
 
-계정 로그인, 메신저(종단간 암호화), 공유 목록, 업데이트는 VaderAI 웹 서비스와 통신합니다 — 이 서비스의 코드는 이 저장소에 없습니다(오픈코어).
-무엇을 보내는지는 [개인정보 처리방침](https://vaderai-web.vercel.app/ko/privacy/)에 있습니다.
+Account sign-in, the messenger (end-to-end encrypted) and the shared package list talk to the VaderAI web service; automatic
+updates talk to this repository's GitHub Releases. The web service's code is not in this repository (open core).
+What is sent is described in the [privacy policy](https://vaderai-web.vercel.app/en/privacy/). The first-run screen
+lets you turn off automatic online checks, and you can change it later under **Automatic online checks** (자동 온라인 확인) in the app's Account window.
 
-## 라이선스
+## License
 
-데스크톱 앱 코드는 [MIT](LICENSE)입니다. 이름과 로고는 [TRADEMARKS.md](TRADEMARKS.md)를 따릅니다.
-함께 실리는 제3자 구성 요소는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)에 있습니다.
+The desktop app code is [MIT](LICENSE). The name and logo follow [TRADEMARKS.md](TRADEMARKS.md).
+Bundled third-party components are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-보안 문제는 [SECURITY.md](SECURITY.md)로, 기여는 [CONTRIBUTING.md](CONTRIBUTING.md)를 보세요.
+Report security issues via [SECURITY.md](SECURITY.md); see [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.

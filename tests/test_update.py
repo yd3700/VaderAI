@@ -89,3 +89,32 @@ def test_apply_on_exit_only_matching_cache(monkeypatch):
     manager.cached = "ABC"
     update.apply_on_exit()
     assert applied == ["ABC"]
+
+
+def test_auto_online_off_stops_update_check_and_catalog_refresh(monkeypatch, tmp_path):
+    """자동 온라인 확인을 끄면 업데이트 확인·광장 목록 자동 받기를 하지 않는다 (SignPath 조건, 2026-11-24)."""
+    from vader.core import catalog_sync
+
+    monkeypatch.setattr(config, "HOME", tmp_path)
+    assert config.auto_online() is False                      # 첫 실행 안내 전엔 끔
+    config.device_set("network.notice", config.NOTICE_VERSION)
+    assert config.auto_online() is True                       # 본 뒤 기본 켬
+    started = []
+    monkeypatch.setattr(update, "Thread", lambda **kw: types.SimpleNamespace(start=lambda: started.append(kw["name"])))
+    monkeypatch.setattr(catalog_sync.threading, "Thread", lambda **kw: types.SimpleNamespace(start=lambda: started.append("catalog")))
+    monkeypatch.setattr(config, "FROZEN", True)
+    monkeypatch.setattr(update, "UPDATE_KEYS", ("key",))
+    monkeypatch.setattr(update, "feed", lambda: "https://example.test/feed")
+    monkeypatch.setattr(catalog_sync, "enabled", lambda: True)
+    monkeypatch.setitem(catalog_sync._last, "next", 0)
+
+    config.device_set("network.auto_online", False)
+    update.start()
+    catalog_sync.refresh_if_due()
+    assert config.auto_online() is False and started == []
+
+    config.device_set("network.auto_online", None)            # 다시 켜면 지운다 — 기본값으로
+    update.start()
+    catalog_sync.refresh_if_due()
+    assert started == ["vader-update", "catalog"]
+    catalog_sync._running.release()                           # refresh_if_due 가 잡은 잠금 — 가짜 스레드는 풀지 않는다

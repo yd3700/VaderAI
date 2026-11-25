@@ -5,7 +5,7 @@
 
 - 키는 역할(root·catalog)마다 따로, 암호로 잠근다. 연 키는 `Key`(역할·공개키)로 묶여 다니고, 발행 함수가
   역할과 **지금 위임 상태**(기간·유출·은퇴)를 확인한 뒤에만 서명한다. 거절되면 원장도 바뀌지 않는다.
-- 원장은 프로세스 간 잠금(`ledger.lock`) 안에서만 바꾼다. 키는 있는데 원장이 없으면 새로 시작하지 않는다.
+- 원장은 프로세스 간 잠금(`ledger.lock`) 안에서만 바꾼다. 원장이 없으면 새로 시작하지 않는다 (처음 한 번 `init_ledger`).
 - 은퇴 키는 원장에 누적되고, 다음 위임에서 `not_after` 가 은퇴 시각으로 잘린 채 계속 은퇴로 남는다.
 - 미승인 룬을 **import 하지 않는다**. 발행 전 검사는 **고정 사본** 하나에만 한다.
 - 회수는 누적만 한다. operational → malicious 로 강해질 수는 있어도 사라지거나 약해지지 않는다.
@@ -46,7 +46,9 @@ class Key:
 
 
 def home() -> Path:
-    return Path.home() / ".vaderai-catalog"
+    """원장 자리. 키와 원장을 USB 한 곳에 같이 두려면 `VADERAI_CATALOG_HOME` 으로 그 폴더를 가리킨다 —
+    PC 마다 원장 사본을 두면 옛 사본으로 같은 순번을 다시 서명할 수 있다 (마스터 2026-11-24)."""
+    return Path(os.environ.get("VADERAI_CATALOG_HOME") or Path.home() / ".vaderai-catalog")
 
 
 # ── 키 ───────────────────────────────────────────────────
@@ -72,11 +74,18 @@ def create_key(role: str, path: Path, passphrase: str) -> str:
             out.write(json.dumps({"role": role, "public_key": public, "key": pem.decode("ascii")}))
     except FileExistsError:
         raise PublishError(f"이미 키가 있습니다 — 덮어쓰지 않습니다: {path}") from None
+    return public       # 원장은 만들지 않는다 — 원장 유실 뒤 키 교체가 빈 원장을 되살리면 순번 1부터 다시 서명한다 (codex1)
+
+
+def init_ledger() -> Path:
+    """**처음 한 번만** 빈 원장을 만든다. 있으면 거절. 그 뒤 원장이 없으면 유실이다 — 다시 부르지 말고 백업을 되살린다."""
     home().mkdir(parents=True, exist_ok=True)
-    with contextlib.suppress(FileExistsError):              # 첫 키와 함께 빈 원장 — 그 뒤 원장이 없으면 유실이다
+    try:
         with (home() / "ledger.json").open("x", encoding="utf-8") as out:
             out.write(json.dumps(_empty()))
-    return public
+    except FileExistsError:
+        raise PublishError(f"발행 원장이 이미 있습니다 — 새로 만들지 않습니다: {home()}") from None
+    return home() / "ledger.json"
 
 
 def load_key(role: str, path: Path, passphrase: str) -> Key:
@@ -115,7 +124,8 @@ def _need(key: Key, role: str) -> None:
 @contextlib.contextmanager
 def _locked():
     """원장 읽기-고치기-쓰기 한 번을 다른 프로세스와 겹치지 않게 (codex1 P1-4)."""
-    home().mkdir(parents=True, exist_ok=True)
+    if not home().is_dir():   # 빠진 USB 를 만들어 내지 않는다
+        raise PublishError(f"발행 원장 폴더가 없습니다 ({home()}). USB 를 꽂았는지, VADERAI_CATALOG_HOME 이 맞는지 확인하세요.")
     lock = home() / "ledger.lock"
     deadline = time.monotonic() + LOCK_WAIT_SECONDS
     while True:
@@ -142,10 +152,10 @@ def _empty() -> dict:
 def ledger() -> dict:
     path = home() / "ledger.json"
     if not path.exists():
-        # 키는 있는데 원장이 없다 — 처음이 아니라 **유실**이다. 새로 시작하면 같은 순번을 다시 서명한다.
-        if any(home().glob("*.key")):
-            raise PublishError("키는 있는데 발행 원장이 없습니다. 원장을 백업에서 되살린 뒤 마지막 공개 목록과 대조하세요.")
-        return _empty()
+        # 원장은 처음 한 번 init_ledger 가 만든다 — 그 뒤 없으면 **유실**이거나 다른 PC 다.
+        # 키가 USB 에 있으면 이 폴더엔 키가 없으니 키 유무로 가리지 않는다. 새로 시작하면 같은 순번을 다시 서명한다.
+        raise PublishError(f"발행 원장이 없습니다 ({path}). USB 의 원장을 이 자리에 넣거나 VADERAI_CATALOG_HOME 을 "
+                           "원장 폴더로 지정하세요. 백업에서 되살렸다면 마지막 공개 목록과 대조하세요.")
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -182,6 +192,9 @@ def renewal_notice(now: datetime | None = None) -> dict | None:
     위임이 바뀌어 새 목록이 필요함 · 서명만 하고 못 올림(유효하면 push, 만료면 다시 서명) ·
     공개본이 서명 3일 넘음(계약 3절) 이나 곧 만료 — 를 구분한다 (codex1 7b P2-2)."""
     if not (home() / "ledger.json").exists():
+        if os.environ.get("VADERAI_CATALOG_HOME"):   # 서명 PC 라고 밝혔는데 원장이 안 보인다 — 조용히 넘기지 않는다
+            return {"rune_id": "", "kind": "renew",
+                    "message": f"발행 원장({home()})에 접근할 수 없어 광장 목록 만료 여부를 확인하지 못했어요. USB 를 꽂아 주세요."}
         return None
     now = now or datetime.now(timezone.utc)
     resign = "[다시 서명] 을 눌러 목록 키 파일로 새로 서명하세요."   # 화면이 버튼을 붙인다 (action)
@@ -210,7 +223,7 @@ def renewal_notice(now: datetime | None = None) -> dict | None:
         else:
             return None
     except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
-        return {"rune_id": "", "kind": "renew", "message": "발행 원장이나 공개 기록을 읽지 못했어요. 서명 PC 의 ~/.vaderai-catalog 를 확인하세요."}
+        return {"rune_id": "", "kind": "renew", "message": f"발행 원장이나 공개 기록을 읽지 못했어요. 서명 PC 의 원장 폴더({home()})를 확인하세요."}
     return {"rune_id": "", "kind": "renew", "action": "resign", "message": f"광장 목록 정보가 {when}. {resign}"}
 
 

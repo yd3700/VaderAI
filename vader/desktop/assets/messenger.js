@@ -50,7 +50,8 @@ async function show(id){
  if(id)await refreshTalk(ep);
  if(ep===ms.epoch&&!box.hidden)focusHere();
 }
-function status(text,bad=false){line.textContent=text;line.classList.toggle('bad',bad);}
+// 상태 줄은 [data-raw] — 여기서 한 번만 번역한다. 이름이 낀 문장은 부르는 쪽이 VaderI18n.t 로 만들고 ready=true (codex1 2단계 4차)
+function status(text,bad=false,ready=false){line.textContent=ready?text:VaderI18n.word(text);line.classList.toggle('bad',bad);}
 
 // 대화 다시 읽기 — 이 epoch 의 상대일 때만 화면에 쓴다.
 async function refreshTalk(ep){
@@ -84,15 +85,15 @@ function draw(){
 function groupPick(f){
  const sel=el('select','select msg-group-select');sel.dataset.peer=f.account_id;
  sel.setAttribute('aria-label','@'+(f.handle||'')+' 그룹');
- sel.append(new Option('그룹 없음',''));ms.groups.forEach(g=>sel.append(new Option(g.name,g.id)));
+ sel.append(new Option('그룹 없음',''));ms.groups.forEach(g=>{const o=new Option(g.name,g.id);o.dataset.raw='';sel.append(o);});
  sel.value=ms.groups.some(g=>g.id===f.group)?f.group:'';
  sel.onchange=async()=>{try{await call('messenger_group_assign',{account_id:f.account_id,gid:sel.value});const g=ms.groups.find(x=>x.id===sel.value);
-  await loadFriends();status(g?'@'+f.handle+' 님을 '+g.name+' 에 넣었어요':'@'+f.handle+' 님을 그룹에서 뺐어요');$('.msg-group-select[data-peer="'+f.account_id+'"]',stream)?.focus();}catch(e){}};
+  await loadFriends();status(g?VaderI18n.t('@{0} 님을 {1} 에 넣었어요',f.handle,g.name):VaderI18n.t('@{0} 님을 그룹에서 뺐어요',f.handle),false,true);$('.msg-group-select[data-peer="'+f.account_id+'"]',stream)?.focus();}catch(e){}};
  return sel;
 }
 function drawList(){
  stream.removeAttribute('role');form.hidden=true;
- status(ms.state==='ready'?(ms.handle?'@'+ms.handle+' 으로 대화해요':''):'');
+ status(ms.state==='ready'?(ms.handle?VaderI18n.t('{0} 으로 대화해요','@'+ms.handle):''):'');
  if(ms.state!=='ready'){stream.append(gateNote());return;}
  const find=el('form','msg-find');find.innerHTML='<label for="msgFind">아이디로 친구 찾기</label><div class="chat-box"><input id="msgFind" autocomplete="off" spellcheck="false" maxlength="21" placeholder="@아이디" aria-describedby="msgFindHelp"><button class="button ghost" type="submit">찾기</button></div><p id="msgFindHelp" class="chat-note">아이디를 정확히 알아야 찾을 수 있어요. 목록이나 자동완성은 없어요.</p>';
  find.onsubmit=e=>{e.preventDefault();findHandle($('#msgFind').value);};
@@ -104,12 +105,13 @@ function drawList(){
   stream.append(r);}
  // 멤버 그룹 (2026-11-18) — 친구는 자기 그룹 밑에, 그룹 없는 친구는 '친구' 밑에. 그룹은 이 PC 에만 있다.
  const named=new Set(ms.groups.map(g=>g.id)),inGroup=g=>f=>f.state==='accepted'&&f.group===g.id;
- const groups=[['받은 요청',f=>f.state==='pending'&&!f.mine],...ms.groups.map(g=>[g.name,inGroup(g)]),
+ const groups=[['받은 요청',f=>f.state==='pending'&&!f.mine],...ms.groups.map(g=>[g.name,inGroup(g),true]),
   ['친구',f=>f.state==='accepted'&&!named.has(f.group)],['보낸 요청',f=>f.state==='pending'&&f.mine],
   ['지난 대화',f=>f.state==='ended'],['차단',f=>f.state==='blocked']];
  let any=false;
- for(const [label,pick] of groups){const fs=ms.friends.filter(pick);if(!fs.length)continue;any=true;
-  stream.append(el('h3','msg-group',label));const list=el('ul','msg-list');
+ for(const [label,pick,mine] of groups){const fs=ms.friends.filter(pick);if(!fs.length)continue;any=true;
+  // 그룹 이름은 사용자가 지은 것 — 번역하지 않는다
+  const head=el('h3','msg-group',label);if(mine)head.dataset.raw='';stream.append(head);const list=el('ul','msg-list');
   fs.forEach(f=>list.append(row(f)));stream.append(list);}
  if(!any)stream.append(el('p','chat-note','아직 친구가 없어요. 상대의 아이디로 찾아 요청을 보내 보세요.'));
  stream.append(groupManager());
@@ -133,7 +135,7 @@ function groupManager(){
    // 그룹을 누르면 소속 친구가 펼쳐진다 (마스터 2026-11-19). 친구마다 [빼기], 아래에 이름 바꾸기·지우기.
    const members=ms.friends.filter(f=>f.group===g.id&&f.state!=='blocked'),dd=el('details','msg-group-item');
    dd.open=ms.groupShown===g.id;dd.ontoggle=()=>{if(dd.open)ms.groupShown=g.id;else if(ms.groupShown===g.id)ms.groupShown=null;};
-   const sum=el('summary');sum.append(el('span','msg-handle',g.name),el('small','muted','친구 '+members.length));dd.append(sum);
+   const sum=el('summary');const gn=el('span','msg-handle',g.name);gn.dataset.raw='';sum.append(gn,el('small','muted','친구 '+members.length));dd.append(sum);
    const box=el('div','msg-group-body');
    if(members.length){const ml=el('ul','msg-members');
     members.forEach(f=>{const m=el('li');m.append(el('span','friend-orb',(f.handle||'?')[0].toUpperCase()),el('span','msg-handle','@'+(f.handle||'알 수 없음')),btn('빼기','groupKick','text-button',{id:f.account_id,gid:g.id}));ml.append(m);});
@@ -196,15 +198,15 @@ const SHARE='\u2063vader-todo:';
 function shareText(m){
  if(!m.text.startsWith(SHARE))return m.text;
  try{const s=JSON.parse(m.text.slice(SHARE.length));
-  return s.op==='share'?(m.outgoing?'할 일을 공유했어요 · ':'할 일을 공유받았어요 · ')+s.title:s.undo?'공유한 할 일을 다시 열었어요':'공유한 할 일을 끝냈어요';}
+  return s.op==='share'?VaderI18n.t(m.outgoing?'할 일을 공유했어요 ·':'할 일을 공유받았어요 ·')+' '+s.title:VaderI18n.t(s.undo?'공유한 할 일을 다시 열었어요':'공유한 할 일을 끝냈어요');}
  catch{return '할 일 공유';}
 }
 function bubble(m){
  const d=el('div','msg '+(m.outgoing?'me':'ai')+(m.state==='failed'?' failed':'')+(m.state==='unreadable'?' unreadable':''));
  const body=el('div','msg-body');body.append(el('span','sr-only',m.outgoing?'나: ':'상대: '));
- body.append(m.text==null?STATES.unreadable:shareText(m));d.append(body);if(m.text?.startsWith(SHARE))d.classList.add('msg-todo');
+ const said=el('span');said.dataset.raw='';said.append(m.text==null?STATES.unreadable:shareText(m));body.append(m.text==null?STATES.unreadable:said);d.append(body);if(m.text?.startsWith(SHARE))d.classList.add('msg-todo');
  const note=STATES[m.state]&&m.text!=null?STATES[m.state]:!m.outgoing&&m.state==='received'&&!m.trusted?'안전 번호 확인 전에 받음':'';
- d.append(el('small','msg-meta',(note?note+' · ':'')+new Date(m.at*1000).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})));
+ d.append(el('small','msg-meta',(note?note+' · ':'')+new Date(m.at*1000).toLocaleTimeString(VaderI18n.lang==='en'?'en-US':'ko-KR',{hour:'2-digit',minute:'2-digit'})));
  return d;
 }
 function syncCompose(){
@@ -232,12 +234,12 @@ async function findHandle(h){
 async function act(b){
  const m=b.dataset.m,id=b.dataset.id||ms.peer;
  if(m==='open')return show(id);
- if(m==='groupKick'){const f=friend(b.dataset.id);try{await call('messenger_group_assign',{account_id:b.dataset.id,gid:''});ms.groupShown=b.dataset.gid;await loadFriends();status('@'+(f?.handle||'')+' 님을 그룹에서 뺐어요');}catch(e){}return;}
+ if(m==='groupKick'){const f=friend(b.dataset.id);try{await call('messenger_group_assign',{account_id:b.dataset.id,gid:''});ms.groupShown=b.dataset.gid;await loadFriends();status(VaderI18n.t('@{0} 님을 그룹에서 뺐어요',f?.handle||''),false,true);}catch(e){}return;}
  if(m==='groupRename'){ms.renaming=b.dataset.gid;return draw();}
  if(m==='groupRenameCancel'){ms.renaming=null;return draw();}
  if(m==='groupDelete'){const g=ms.groups.find(x=>x.id===b.dataset.gid);if(!g)return;
   if(ms.armed!=='del:'+g.id){ms.armed='del:'+g.id;b.textContent='한 번 더 누르면 지워요';setTimeout(()=>{if(ms.armed==='del:'+g.id){ms.armed=null;b.textContent='지우기';}},4000);return;}
-  ms.armed=null;try{ms.groups=await call('messenger_group_delete',{gid:g.id});await loadFriends();status(g.name+' 그룹을 지웠어요. 친구 관계는 그대로예요.');}catch(e){}return;}
+  ms.armed=null;try{ms.groups=await call('messenger_group_delete',{gid:g.id});await loadFriends();status(VaderI18n.t('{0} 그룹을 지웠어요. 친구 관계는 그대로예요.',g.name),false,true);}catch(e){}return;}
  if(m==='retry'){ms.state=null;ms.error=null;draw();return tick();}
  if(m==='safety'){const peer=ms.peer,ep=ms.epoch;try{const s=await api('messenger_safety',{account_id:peer});if(ep===ms.epoch){ms.safety={peer,number:s.number,open:true};draw();}}catch(e){status(e.message,true);}return;}
  if(m==='safetyClose'){ms.safety=null;return draw();}
@@ -309,7 +311,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!box.hidden&&!docke
 box.addEventListener('focusout',e=>{const to=e.relatedTarget;if(!docked.matches&&to&&!box.contains(to)&&to!==toggle&&!to.closest?.('[data-friend]'))open(false,false);});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){tick();if(ms.peer&&!box.hidden)refreshTalk(ms.epoch);}});
 const start=()=>tick();
-if(window.pywebview?.api)start();else window.addEventListener('pywebviewready',start,{once:true});
+VaderI18n.ready.then(start);
 // 트레이에서 다시 열면: 숨은 동안 코어가 받아 둔 메시지를 친구 목록·대화에 바로 보인다
 const wake=async()=>{await tick();if(ms.state==='ready')await loadFriends().catch(()=>{});if(ms.peer&&!box.hidden)refreshTalk(ms.epoch);};
 window.VaderMessenger={show,wake,close:()=>{if(!box.hidden)open(false,false);}};

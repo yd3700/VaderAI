@@ -128,6 +128,7 @@ def test_a_server_refusal_drops_offline_entry_too(vault, monkeypatch):
 def door(vault, monkeypatch):
     monkeypatch.setattr(gate, "_SCRYPT", {**gate._SCRYPT, "n": 2 ** 4})
     _server(monkeypatch, answer={"id": "acc-a", "display_name": "가나메디칼"})
+    config.device_set("network.notice", config.NOTICE_VERSION)   # 첫 실행 안내는 따로 본다
     api = host.DesktopAPI()
     api._window = MagicMock()
 
@@ -136,6 +137,21 @@ def door(vault, monkeypatch):
         api._controller = MagicMock()
     monkeypatch.setattr(api, "_start", start)
     return api
+
+
+def test_first_run_notice_comes_before_any_account_check_and_can_turn_auto_off(door, monkeypatch):
+    """첫 실행: 계정 확인(통신) 전에 안내. 끄고 시작하면 업데이트 확인도 광장 자동 받기도 안 한다 (SignPath 조건)."""
+    from vader.core import update
+    config.device_set("network.notice", None)
+    who = host.gate.who
+    monkeypatch.setattr(host.gate, "who", lambda: pytest.fail("안내 전에 계정을 확인하면 안 된다"))
+    started = []
+    monkeypatch.setattr(update, "start", lambda: started.append(config.auto_online()))
+    assert door.call("gate_status")["data"] == {"state": "notice"}
+    assert config.auto_online() is False                         # 안내 전엔 자동 확인 없음
+    monkeypatch.setattr(host.gate, "who", who)
+    assert door.call("gate_notice", {"auto": False})["data"]["state"] == "pin_setup"
+    assert started == [False] and config.auto_online() is False and config.notice_seen()
 
 
 def test_business_calls_are_refused_until_the_pin_and_again_after_lock(door):

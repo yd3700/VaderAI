@@ -20,6 +20,7 @@ PASS = "충분히 긴 시험 암호입니다"
 @pytest.fixture
 def keys(tmp_path, monkeypatch):
     monkeypatch.setattr(publisher, "home", lambda: tmp_path / "publisher")
+    publisher.init_ledger()
     root_pub = publisher.create_key("root", tmp_path / "usb" / "root.key", PASS)
     cat_pub = publisher.create_key("catalog", tmp_path / "publisher" / "catalog.key", PASS)
     monkeypatch.setattr(catalog, "ROOT_KEYS", (root_pub,))
@@ -167,6 +168,37 @@ def test_a_held_lock_or_a_lost_ledger_stops_signing(keys, monkeypatch):
     (tmp / "publisher" / "ledger.json").unlink()
     with pytest.raises(publisher.PublishError, match="원장이 없습니다"):
         publisher.issue_snapshot(cat, now=NOW)
+    (tmp / "publisher" / "catalog.key").unlink()        # 키는 USB 에 — 원장 폴더에 키가 없어도 새로 시작하지 않는다
+    with pytest.raises(publisher.PublishError, match="원장이 없습니다"):
+        publisher.issue_snapshot(cat, now=NOW)
+    publisher.create_key("catalog", tmp / "usb" / "new-catalog.key", PASS)   # 원장 유실 뒤 키 교체도
+    publisher.create_key("update", tmp / "usb" / "update.key", PASS)
+    assert not (tmp / "publisher" / "ledger.json").exists(), "키 만들기가 빈 원장을 되살리지 않는다"
+    with pytest.raises(publisher.PublishError, match="원장이 없습니다"):
+        publisher.issue_delegation(root, [window], now=NOW)
+    publisher.init_ledger()                              # 처음 설정만 원장을 만들고, 두 번은 안 된다
+    with pytest.raises(publisher.PublishError, match="이미 있습니다"):
+        publisher.init_ledger()
+
+
+def test_a_pulled_usb_stops_signing_and_says_so(keys, monkeypatch):
+    root, cat, window, tmp = keys
+    gone = tmp / "pulled-usb" / "vaderai-catalog"
+    monkeypatch.setattr(publisher, "home", lambda: gone)
+    with pytest.raises(publisher.PublishError, match="원장 폴더가 없습니다"):
+        publisher.issue_snapshot(cat, now=NOW)
+    assert not gone.exists(), "빠진 USB 자리를 만들어 내지 않는다"
+    monkeypatch.delenv("VADERAI_CATALOG_HOME", raising=False)   # 서명 PC 에서 돌려도 받는 PC 경우를 따로 본다
+    assert publisher.renewal_notice(NOW) is None
+    monkeypatch.setenv("VADERAI_CATALOG_HOME", str(gone))
+    assert "접근할 수 없어" in publisher.renewal_notice(NOW)["message"]
+
+
+def test_catalog_home_follows_the_usb_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv("VADERAI_CATALOG_HOME", str(tmp_path / "usb"))
+    assert publisher.home() == tmp_path / "usb"
+    monkeypatch.delenv("VADERAI_CATALOG_HOME")
+    assert publisher.home() == Path.home() / ".vaderai-catalog"
 
 
 def test_key_recovery_reapproves_the_same_package_in_the_new_epoch(keys, tmp_path):

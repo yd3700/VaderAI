@@ -1,4 +1,11 @@
 // Persistent terminal: polling appends actual log lines without replaying history.
+// 로그 한 줄 '[수준] 메시지  · 키=값 …' — 메시지만 룬 사전(없으면 앱 사전)으로, 나머지는 원본 그대로 (영문판 후속)
+function logLine(runeId,text){
+ const m=/^(\[[^\]]+\] )(.*?)((?:  · .*)?)$/s.exec(text);
+ if(!m||!window.VaderI18n||VaderI18n.lang!=='en')return text;
+ const said=VaderI18n.runeHit(runeId,m[2])?VaderI18n.rune(runeId,m[2]):VaderI18n.word(m[2]);
+ return m[1]+said+m[3];
+}
 class LiveLogTerminal {
  constructor() {
   this.jobId=null;this.lines=[];this.follow=true;this.unseen=0;this.position=0;
@@ -47,7 +54,7 @@ class LiveLogTerminal {
    if(!fresh&&this.follow&&!job.terminal&&added.length<=8)line.classList.add('arriving');
    if(/\[error\]/i.test(text))line.classList.add('log-error');
    else if(/\[warn(?:ing)?\]/i.test(text))line.classList.add('log-warning');
-   line.textContent=text;fragment.append(line);
+   line.dataset.raw='';line.textContent=logLine(job.rune_id,text);fragment.append(line);
   }
   this.list.append(fragment);this.lines=incoming;
   if(!this.follow)this.unseen+=added.length;

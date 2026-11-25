@@ -69,4 +69,5 @@ jobs:
         with: { name: vaderai-windows, path: releases }
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" releases/* --draft --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes "초안 — 업데이트 서명(.sig)을 올린 뒤 공개"
+        run: |
+          gh release create "${GITHUB_REF_NAME}" releases/* --draft --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes "Draft — published after the update signature (.sig) is attached. Code signing policy: https://github.com/${GITHUB_REPOSITORY}/blob/main/CODE_SIGNING.md"

@@ -153,7 +153,7 @@ def _wait_for_code(origin: str, open_browser, timeout: float) -> tuple[str, str,
         redirect = f"http://127.0.0.1:{server.server_address[1]}/callback"
         query = urllib.parse.urlencode({"challenge": challenge, "redirect": redirect,
                                         "name": (socket.gethostname() or "PC")[:60], "state": state})
-        open_browser(f"{origin}/ko/device/?{query}")
+        open_browser(f"{origin}/{config.ui_lang()}/device/?{query}")
         deadline[0] = time.monotonic() + timeout
         while "code" not in got:
             left = deadline[0] - time.monotonic()

@@ -54,6 +54,10 @@ class DesktopAPI:
                 'gate_forgot': self._gate_forgot,
                 'gate_pin_setup': self._gate_pin_setup,
                 'gate_unlock': self._gate_unlock,
+                'gate_notice': self._gate_notice,
+                'gate_privacy': lambda: webbrowser.open(f'{account.site()}/{config.ui_lang()}/privacy/'),
+                'app_lang': config.ui_lang,
+                'set_app_lang': lambda lang: config.device_set('ui.lang', lang if lang in ('ko', 'en') else None) or config.ui_lang(),
                 'update_status': update.status,
                 'app_version': lambda: __version__,
             }
@@ -90,6 +94,8 @@ class DesktopAPI:
                 'link_source': self._link_source,
                 'import_recording': self._controller.import_recording,
                 'set_dev_mode': self._controller.set_dev_mode,
+                'auto_online': self._controller.auto_online,
+                'set_auto_online': self._controller.set_auto_online,
                 'set_rune_enabled': self._controller.set_rune_enabled,
                 'install_client': self._controller.install_client,
                 'client_status': clients_status,
@@ -129,7 +135,7 @@ class DesktopAPI:
                 'market_shares': self._controller.market_shares,
                 'market_share_save': self._controller.market_share_save,
                 'account_logout': self._logout,
-                'account_web': lambda: webbrowser.open(account.site() + '/ko/account/'),   # 로그인 방법 연결·계정 합치기는 웹 계정 화면에서
+                'account_web': lambda: webbrowser.open(f'{account.site()}/{config.ui_lang()}/account/'),   # 로그인 방법 연결·계정 합치기는 웹 계정 화면에서
                 # 메신저 (3단계 3c). 잠긴 동안은 위의 문에서 막힌다 — 받아 오기(sync)도 화면이 열려 있을 때만.
                 'messenger_connect': messenger.connect,
                 'messenger_friends': messenger.friends,
@@ -205,6 +211,8 @@ class DesktopAPI:
             if gate.claim_pending():
                 self._pending = None
                 return {'state': 'claiming'}
+            if not config.notice_seen():       # 첫 실행 — 통신(계정 확인 포함) 전에 안내와 끄기 선택
+                return {'state': 'notice'}
             found = gate.who()
             if found['state'] != 'ok':
                 self._pending = None
@@ -218,6 +226,13 @@ class DesktopAPI:
             self._pending = (found['origin'], found['account'])
             has = gate.has_pin(folder)
             return {'state': 'pin' if has else 'pin_setup', 'name': name, 'wait': gate.wait_seconds(folder) if has else 0}
+
+    def _gate_notice(self, auto=True):
+        """첫 실행 안내를 봤다. 자동 온라인 확인을 끄기로 했으면 그대로 두고, 켰으면 이제 업데이트 확인을 시작한다."""
+        config.device_set('network.auto_online', None if auto else False)
+        config.device_set('network.notice', config.NOTICE_VERSION)
+        update.start()
+        return self._gate_status()
 
     def _sign_in(self):
         """브라우저 로그인. 열린 상태에서는 거절 — 토큰과 작업공간이 갈리지 않게 (codex1 P1-1). 로그인한 계정을 돌려준다."""
@@ -787,12 +802,14 @@ def claim_app():
 
 
 class _BadgeApi:
-    """pywebview 배지 창의 다리 — 끝내기만, 그 녹화의 번호로."""
+    """pywebview 배지 창의 다리 — 끝내기(그 녹화의 번호로)와 화면 언어 읽기만."""
 
     def __init__(self, api, rec):
         self._api, self._rec = api, rec
 
     def call(self, method, args=None):
+        if method == 'app_lang':
+            return {'ok': True, 'data': config.ui_lang()}
         return self._api.call('record_end', {'rec': self._rec}) if method == 'record_end' else {'ok': False}
 
 

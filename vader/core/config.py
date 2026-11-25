@@ -97,6 +97,32 @@ def device_get(key_path: str, default: Any = None) -> Any:
     return data
 
 
+def ui_lang() -> str:
+    """화면 언어 'ko'|'en'. 기기 설정(`ui.lang`)이 먼저, 없으면 Windows 표시 언어 — 한국어가 아니면 영어 (2026-11-24 영문판)."""
+    chosen = device_get("ui.lang")
+    if chosen in ("ko", "en"):
+        return chosen
+    try:
+        import ctypes
+        return "ko" if ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF == 0x12 else "en"
+    except (AttributeError, OSError):
+        return "ko"
+
+
+#: 첫 실행 안내(개인정보·자동 통신)의 판. 올리면 다음 실행 때 다시 묻는다.
+NOTICE_VERSION = 1
+
+
+def notice_seen() -> bool:
+    return device_get("network.notice") == NOTICE_VERSION
+
+
+def auto_online() -> bool:
+    """자동 온라인 확인(업데이트 확인·광장 목록 자동 받기). 첫 실행 안내를 보기 전엔 끔, 본 뒤 기본 켬 —
+    끄면 사람이 누를 때만 (SignPath 조건: 설치 때 방침을 보이고 끌 수 있게, 2026-11-24 codex1)."""
+    return notice_seen() and device_get("network.auto_online", True) is not False
+
+
 def device_set(key_path: str, value: Any) -> None:
     """기기 설정 한 값. None 이면 지운다. 임시 파일에 다 쓴 뒤 바꿔 끼운다."""
     path = HOME / "device.json"

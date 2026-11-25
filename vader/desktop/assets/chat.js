@@ -19,7 +19,8 @@ function bubble(role,text,cls=''){
  const m=document.createElement('div');m.className='msg '+role+(cls?' '+cls:'');
  const who=document.createElement('span');who.className='sr-only';who.textContent=role==='me'?'나: ':'VaderAI: ';
  const body=document.createElement('div');body.className='msg-body';body.append(who);
- String(text).split(/\*\*(.+?)\*\*/s).forEach((part,i)=>{if(!part)return;if(i%2){const b=document.createElement('b');b.textContent=part;body.append(b);}else body.append(part);});
+ const said=document.createElement('span');said.dataset.raw='';body.append(said);   // 사용자·AI 가 쓴 글은 번역하지 않는다
+ String(text).split(/\*\*(.+?)\*\*/s).forEach((part,i)=>{if(!part)return;if(i%2){const b=document.createElement('b');b.textContent=part;said.append(b);}else said.append(part);});
  m.append(body);const stick=nearEnd();stream.append(m);if(stick||role==='me')stream.scrollTop=stream.scrollHeight;return m;
 }
 function intro(){
@@ -75,6 +76,6 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!box.hidden&&!docke
 box.addEventListener('focusout',e=>{const to=e.relatedTarget;if(!docked.matches&&to&&!box.contains(to)&&to!==toggle)open(false,false);});
 // 넓은 창에서 열어 두고 닫았으면 다시 열어 둔다 — 코어 다리가 붙은 뒤에
 const restore=()=>{try{if(docked.matches&&localStorage.getItem('vader.chat')==='open')open(true,false);}catch(e){}};
-if(window.pywebview?.api)restore();else window.addEventListener('pywebviewready',restore,{once:true});
+VaderI18n.ready.then(restore);
 window.VaderChat={sync,close:()=>{if(!box.hidden)open(false,false);}};
 })();
