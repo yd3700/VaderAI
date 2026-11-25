@@ -42,9 +42,17 @@ jobs:
           python -m venv .venv-desktop
           .venv-desktop\Scripts\python -m pip install --upgrade pip
           .venv-desktop\Scripts\python -m pip install ".[desktop,eonm,supply,gemini,claude,workshop]" typer==0.21.2 pyinstaller==6.22.3 velopack==1.2.161   # typer: PyInstaller 가 mcp.cli 를 모을 때 필요
-      - name: Update feed = this repo's GitHub Releases
+      # 업데이트 피드 = 운영 웹(초대 키가 든 주소, 저장소 비밀 UPDATE_FEED_URL). GitHub 릴리스 주소는 쓰지 않는다 —
+      # Velopack(ureq)이 release-assets 로 넘어갈 때 jwt 를 잃어 404 (0.1.37 에서 확인, 2026-11-25).
+      # 태그 빌드만 피드를 넣고, 비밀이 없으면 멈춘다. main·PR 빌드는 업데이트가 꺼진 채로 만든다 (codex1).
+      - name: Update feed (release tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
-        run: '"https://github.com/${{ github.repository }}/releases/latest/download" | Out-File packaging\update_feed.txt -Encoding ascii -NoNewline'
+        env:
+          FEED: ${{ secrets.UPDATE_FEED_URL }}
+        run: |
+          if (-not $env:FEED) { throw 'UPDATE_FEED_URL secret is required for release builds' }
+          $env:FEED | Out-File packaging\update_feed.txt -Encoding ascii -NoNewline
       - name: Build unsigned (exe + installer)
         shell: pwsh
         run: |
