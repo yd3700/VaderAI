@@ -67,14 +67,21 @@ def _db() -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
     have = {r[1] for r in con.execute("PRAGMA table_info(cards)")}
-    if "rev" not in have:   # 2026-11-11 이전 파일
-        con.execute("ALTER TABLE cards ADD COLUMN rev INTEGER NOT NULL DEFAULT 0")
-    if "pos" not in have:   # 2026-11-12 이전 파일
-        con.execute("ALTER TABLE cards ADD COLUMN pos INTEGER")
-    for col in ("share_id", "owner", "shared_with"):   # 2026-11-18 멤버 공유
+    for col, kind in (("rev", "INTEGER NOT NULL DEFAULT 0"),   # 2026-11-11 이전 파일
+                      ("pos", "INTEGER"),                      # 2026-11-12 이전 파일
+                      ("share_id", "TEXT"), ("owner", "TEXT"), ("shared_with", "TEXT")):   # 2026-11-18 멤버 공유
         if col not in have:
-            con.execute(f"ALTER TABLE cards ADD COLUMN {col} TEXT")
+            _add_column(con, "cards", col, kind)
     return con
+
+
+def _add_column(con, table: str, col: str, kind: str) -> None:
+    """옛 파일에 열을 더한다. 여러 스레드가 처음 여는 순간 겹치면 다른 쪽이 먼저 더했을 수 있다 — 그건 성공으로 본다 (CI 2026-11-25)."""
+    try:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc):
+            raise
 
 
 def _now() -> datetime:

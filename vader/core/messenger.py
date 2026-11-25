@@ -162,7 +162,11 @@ def _db() -> sqlite3.Connection:
     con.executescript(SCHEMA)
     for table, column, kind in _COLUMNS:
         if column not in {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}:
-            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+            try:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+            except sqlite3.OperationalError as exc:   # 다른 연결이 먼저 더했다
+                if "duplicate column" not in str(exc):
+                    raise
     return con
 
 
