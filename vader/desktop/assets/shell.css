@@ -32,7 +32,7 @@ body.msg-open .rail a.active{color:var(--muted);background:none}   /* 메신저�
 
 /* 좁은 창: 머리는 이름과 상태만, 본문 여백을 줄인다 */
 @media(max-width:640px){
- header{padding-inline:14px}.brand{font-size:17px}.app-version{display:none}
+ header{padding-inline:14px}.brand{font-size:17px}
  main{padding:12px 12px 16px}
  footer{padding-inline:12px;font-size:10px}
  #toast{bottom:40px;right:12px;left:76px;max-width:none;transform:translateY(15px)}
@@ -114,7 +114,7 @@ main.core-fit .nexus-scene>.core-stage{flex:1;min-height:0;position:relative}
 
 /* 위 머리글(VADERAI 로고)은 뺐다 — 업데이트 알림이 있을 때만 줄이 생긴다 (마스터 요청 2026-11-10) */
 body,body.chat-open,body.msg-open{grid-template-rows:auto minmax(0,1fr) 28px}
-.brand,.app-version{display:none}
+.brand{display:none}   /* 앱 버전은 아래 줄 [앱 연결됨] 옆으로 옮겼다 (마스터 2026-11-25) */
 body:has(#updateStatus[hidden]) header{display:none}
 header{height:44px}
 .chat{grid-row:1/-1}
