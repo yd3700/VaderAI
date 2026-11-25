@@ -43,7 +43,7 @@ function open(show,focus=true){
  publish();
 }
 const focusHere=()=>(ms.peer?(input.disabled?stream:input):($('#msgFind')||stream)).focus();
-function leave(){if(ms.peer)drafts[ms.peer]=input.value;ms.epoch++;ms.history=[];ms.safety=null;ms.armed=null;}
+function leave(){if(ms.shots?.length)dropShots();photoCache.clear();if(ms.peer)drafts[ms.peer]=input.value;ms.epoch++;ms.history=[];ms.safety=null;ms.armed=null;}
 async function show(id){
  leave();ms.peer=id||null;input.value=id&&drafts[id]||'';
  const ep=ms.epoch;open(true,false);
@@ -194,6 +194,76 @@ function safetyPanel(f){
  return s;
 }
 const STATES={queued:'보내는 중',failed:'보내지 못했어요',unreadable:'읽을 수 없는 메시지'};
+// 사진 (2026-11-25) — 받은 사진의 상태. ok 만 그린다. 그림은 코어가 다시 만든 JPEG(data URL)만 받는다.
+const PHOTO={waiting:'사진 받는 중…',expired:'기한이 지나 받지 못한 사진',broken:'손상돼 열 수 없는 사진',unchecked:'안전 번호 확인 전에 받은 사진은 열지 않아요'};
+const photoCache=new Map();
+function photo(m){
+ const f=el('figure','msg-photo-frame');
+ if(m.image.state!=='ok'){f.append(el('span','msg-photo-note',PHOTO[m.image.state]||PHOTO.broken));return f;}
+ const img=document.createElement('img');img.alt=m.outgoing?'보낸 사진':'받은 사진';
+ if(m.image.w&&m.image.h)img.style.aspectRatio=m.image.w+' / '+m.image.h;
+ const show=src=>{img.src=src;img.onclick=()=>viewPhoto(src,img.alt);};
+ if(photoCache.has(m.id))show(photoCache.get(m.id));
+ else api('messenger_image',{message_id:m.id}).then(r=>{photoCache.set(m.id,r.src);if(photoCache.size>40)photoCache.delete(photoCache.keys().next().value);show(r.src);}).catch(()=>{f.replaceChildren(el('span','msg-photo-note',PHOTO.waiting));});
+ img.tabIndex=0;img.onkeydown=e=>{if(e.key==='Enter'&&img.src)viewPhoto(img.src,img.alt);};
+ f.append(img);return f;
+}
+function viewPhoto(src,alt){
+ const v=el('div','msg-viewer');v.setAttribute('role','dialog');v.setAttribute('aria-label',alt);
+ const img=document.createElement('img');img.src=src;img.alt=alt;v.append(img,el('span','msg-viewer-hint','누르거나 Esc 로 닫기'));
+ const close=()=>{v.remove();document.removeEventListener('keydown',esc);};const esc=e=>{if(e.key==='Escape')close();};
+ v.onclick=close;document.addEventListener('keydown',esc);document.body.append(v);
+}
+// 보내기 전: 코어가 다시 만든 미리보기만 보인다(원본은 화면에 안 남김). 확인한 사진만 보낸다.
+const shots=$('#msgShots'),photoBtn=$('#msgPhoto'),fileIn=$('#msgFile');
+ms.shots=[];
+const PHOTO_MAX=20*1024*1024,SHOTS_MAX=10;
+function canPhoto(){const f=ms.peer&&friend(ms.peer);return !!f&&f.state==='accepted'&&f.verified&&!ms.busy;}
+async function addPhotos(files){
+ const f=ms.peer&&friend(ms.peer);
+ if(!canPhoto())return status(!f||f.state!=='accepted'?'친구에게만 보낼 수 있어요':'안전 번호를 확인한 뒤에 보낼 수 있어요',true);
+ if(!f.images)return status('상대가 아직 사진을 받을 수 없는 버전이에요. 상대가 앱을 업데이트하면 보낼 수 있어요.',true);
+ const peer=ms.peer;
+ for(const file of [...files]){
+  if(ms.shots.length>=SHOTS_MAX){status(VaderI18n.t('사진은 한 번에 {0}장까지 보낼 수 있어요',SHOTS_MAX),true);break;}
+  if(!['image/jpeg','image/png'].includes(file.type)){status('JPG·PNG 사진만 보낼 수 있어요.',true);continue;}
+  if(file.size>PHOTO_MAX){status('사진은 20MB 까지 보낼 수 있어요.',true);continue;}
+  try{
+   const data=await new Promise((ok,bad)=>{const r=new FileReader();r.onload=()=>ok(String(r.result).split(',',2)[1]||'');r.onerror=()=>bad(new Error('사진을 읽지 못했어요.'));r.readAsDataURL(file);});
+   const p=await api('messenger_prepare_image',{data});
+   if(ms.peer!==peer){api('messenger_drop_image',{token:p.token}).catch(()=>{});return;}
+   ms.shots.push(p);drawShots();
+  }catch(e){status(e.message,true);}
+ }
+}
+function dropShots(){for(const s of ms.shots)api('messenger_drop_image',{token:s.token}).catch(()=>{});ms.shots=[];drawShots();}
+function drawShots(){
+ shots.hidden=!ms.shots.length;shots.replaceChildren();if(!ms.shots.length)return;
+ const row=el('div','msg-shot-row');
+ ms.shots.forEach((s,i)=>{const t=el('div','msg-shot');const img=document.createElement('img');img.src=s.preview;img.alt=VaderI18n.t('보낼 사진 {0}',i+1);
+  const x=btn('×','shotRemove','msg-shot-x',{i:String(i)});x.setAttribute('aria-label',VaderI18n.t('사진 {0} 빼기',i+1));t.append(img,x);row.append(t);});
+ const f=friend(ms.peer);
+ shots.append(row,el('p','msg-shot-warn','사진 속 환자 이름·등록번호·얼굴은 가려지지 않아요. 기관에서 허용한 자료만 보내세요.'),
+  (()=>{const a=el('div','msg-shot-acts');a.append(btn(VaderI18n.t('@{0} 님에게 사진 {1}장 보내기',f?.handle||'',ms.shots.length),'shotSend','button primary'),btn('취소','shotCancel','button ghost'));return a;})());
+}
+async function sendShots(){
+ const peer=ms.peer,ep=ms.epoch;if(!peer||ms.busy||!ms.shots.length)return;
+ ms.busy=true;syncCompose();
+ // 응답을 기다리는 사이 다른 대화로 갔으면 그 결과를 지금 대화에 넣지 않는다 (codex1 사진 회신 2 P1-3)
+ try{while(ms.shots.length&&ep===ms.epoch){const s=ms.shots[0];const m=await api('messenger_send_image',{account_id:peer,token:s.token});
+   ms.shots=ms.shots.filter(x=>x.token!==s.token);if(ep!==ms.epoch)break;merge(m);drawShots();draw();}}
+ catch(e){if(ep===ms.epoch)status(e.message,true);}
+ finally{ms.busy=false;syncCompose();drawShots();}
+}
+photoBtn.innerHTML=icon('image');
+photoBtn.onclick=()=>{if(canPhoto())fileIn.click();else addPhotos([]);};
+fileIn.onchange=()=>{const files=[...fileIn.files];fileIn.value='';addPhotos(files);};
+// 끌어다 놓기는 대화창 안에서만 — 룬 실행용 드롭(메인)과 섞이지 않게 여기서 멈춘다
+const hasFiles=e=>[...(e.dataTransfer?.types||[])].includes('Files');
+box.addEventListener('dragover',e=>{if(!ms.peer||!hasFiles(e))return;e.preventDefault();e.stopPropagation();box.classList.add('dropping');});
+box.addEventListener('dragleave',e=>{if(!box.contains(e.relatedTarget))box.classList.remove('dropping');});
+box.addEventListener('drop',e=>{box.classList.remove('dropping');if(!ms.peer||!hasFiles(e))return;e.preventDefault();e.stopPropagation();addPhotos(e.dataTransfer.files);});
+input.addEventListener('paste',e=>{const files=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith('image/'));if(files.length){e.preventDefault();addPhotos(files);}});
 // 할 일 공유 글(코어 todo.SHARE_MARK)은 말풍선에 '할 일' 로 — 글자 그대로 보이지 않게.
 const SHARE='\u2063vader-todo:';
 function shareText(m){
@@ -204,15 +274,18 @@ function shareText(m){
 }
 function bubble(m){
  const d=el('div','msg '+(m.outgoing?'me':'ai')+(m.state==='failed'?' failed':'')+(m.state==='unreadable'?' unreadable':''));
+ if(m.image){d.classList.add('msg-image');const body=el('div','msg-body');body.append(el('span','sr-only',m.outgoing?'나: ':'상대: '),photo(m));d.append(body);
+  const note=STATES[m.state]||(!m.outgoing&&!m.trusted?'안전 번호 확인 전에 받음':'');
+  d.append(el('small','msg-meta',(note?VaderI18n.word(note)+' · ':'')+new Date(m.at*1000).toLocaleTimeString(VaderI18n.lang==='en'?'en-US':'ko-KR',{hour:'2-digit',minute:'2-digit'})));return d;}
  const body=el('div','msg-body');body.append(el('span','sr-only',m.outgoing?'나: ':'상대: '));
  const said=el('span');said.dataset.raw='';said.append(m.text==null?STATES.unreadable:shareText(m));body.append(m.text==null?STATES.unreadable:said);d.append(body);if(m.text?.startsWith(SHARE))d.classList.add('msg-todo');
  const note=STATES[m.state]&&m.text!=null?STATES[m.state]:!m.outgoing&&m.state==='received'&&!m.trusted?'안전 번호 확인 전에 받음':'';
- d.append(el('small','msg-meta',(note?note+' · ':'')+new Date(m.at*1000).toLocaleTimeString(VaderI18n.lang==='en'?'en-US':'ko-KR',{hour:'2-digit',minute:'2-digit'})));
+ d.append(el('small','msg-meta',(note?VaderI18n.word(note)+' · ':'')+new Date(m.at*1000).toLocaleTimeString(VaderI18n.lang==='en'?'en-US':'ko-KR',{hour:'2-digit',minute:'2-digit'})));
  return d;
 }
 function syncCompose(){
  const f=ms.peer&&friend(ms.peer),ok=!!f&&f.state==='accepted'&&f.verified&&!ms.busy;
- input.disabled=!ok;send.disabled=!ok;
+ input.disabled=!ok;send.disabled=!ok;photoBtn.disabled=!ok;
  input.placeholder=!f||f.state!=='accepted'?'':!f.verified?'안전 번호 확인 후 보낼 수 있어요':'메시지';
 }
 function merge(m){const i=ms.history.findIndex(x=>x.id===m.id);if(i<0)ms.history.push(m);else ms.history[i]=m;}
@@ -242,6 +315,9 @@ async function act(b){
   if(ms.armed!=='del:'+g.id){ms.armed='del:'+g.id;b.textContent='한 번 더 누르면 지워요';setTimeout(()=>{if(ms.armed==='del:'+g.id){ms.armed=null;b.textContent='지우기';}},4000);return;}
   ms.armed=null;try{ms.groups=await call('messenger_group_delete',{gid:g.id});await loadFriends();status(VaderI18n.t('{0} 그룹을 지웠어요. 친구 관계는 그대로예요.',g.name),false,true);}catch(e){}return;}
  if(m==='retry'){ms.state=null;ms.error=null;draw();return tick();}
+ if(m==='shotSend')return sendShots();
+ if(m==='shotCancel')return dropShots();
+ if(m==='shotRemove'){const s=ms.shots.splice(Number(b.dataset.i),1)[0];if(s)api('messenger_drop_image',{token:s.token}).catch(()=>{});return drawShots();}
  if(m==='move'){
   if(ms.armed!=='move'){ms.armed='move';b.textContent='한 번 더 누르면 옮겨요 (지난 대화·안 받은 메시지는 오지 않아요)';setTimeout(()=>{if(ms.armed==='move'){ms.armed=null;b.textContent='이 PC 로 메신저 옮기기';}},6000);return;}
   ms.armed=null;b.disabled=true;
@@ -296,7 +372,7 @@ function tick(){
    if(ms.state==='ready'){
     const r=await api('messenger_sync');ticks++;
     if(r.received||ticks%6===0)await loadFriends();
-    if(ms.peer&&!box.hidden&&(r.received||ms.history.some(m=>m.state==='queued')))await refreshTalk(ms.epoch);
+    if(ms.peer&&!box.hidden&&(r.received||r.images||ms.history.some(m=>m.state==='queued')))await refreshTalk(ms.epoch);
    }
    delay=5000;
   }catch(e){

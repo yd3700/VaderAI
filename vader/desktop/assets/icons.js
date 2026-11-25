@@ -1,5 +1,6 @@
 const $=(s,r=document)=>r.querySelector(s);
 const icons={
+image:'<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-9 8"/>',
 core:'<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="m8 9 4 7 4-7"/>',
 runes:'<path d="m7 3 4 4-4 4-4-4Zm10 0 4 4-4 4-4-4ZM7 13l4 4-4 4-4-4Zm10 0 4 4-4 4-4-4Z"/>',
 workshop:'<path d="M4 20h16M6 20v-4h12v4M8 16l1-5h6l1 5M14 11l5-6M17 3l4 4"/>',

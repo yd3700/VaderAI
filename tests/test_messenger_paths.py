@@ -11,6 +11,6 @@ from vader.core import account, messenger
 def test_messenger_calls_the_web_with_a_trailing_slash(monkeypatch, method, action, body):
     seen = []
     monkeypatch.setattr(messenger, "_live", lambda: None)
-    monkeypatch.setattr(account, "call", lambda m, path, data=None: seen.append((m, path, data)) or {})
+    monkeypatch.setattr(account, "call", lambda m, path, data=None, limit=None: seen.append((m, path, data, limit)) or {})
     messenger._api(method, action, body)
-    assert seen == [(method, f"/api/messenger/{action}/", json.dumps(body).encode() if body is not None else None)]
+    assert seen == [(method, f"/api/messenger/{action}/", json.dumps(body).encode() if body is not None else None, None)]

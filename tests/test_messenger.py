@@ -34,6 +34,7 @@ class Server:
         self.fail_on = None      # 이 동작은 처리하기 전에 끊긴다
         self.drop_reply = None   # 이 동작은 처리하고 답만 잃는다
         self.last = {}           # 동작별 마지막 요청 본문
+        self.uploads, self.attachments = {}, {}
 
     def call(self, who, method, path, body):
         assert path.startswith(messenger.API) and path.endswith("/"), path   # 웹 trailingSlash — 없으면 308
@@ -151,7 +152,7 @@ class Server:
             out.append({"account_id": other, "handle": self.accounts[other]["handle"], "state": f["state"],
                         "mine": f["by"] == who["account"], "generation": f["generation"], "device_id": dev,
                         "identity_ed": d and d["ed"], "identity_curve": d and d["curve"],
-                        "identity_sig": d and d["sig"]})
+                        "identity_sig": d and d["sig"], "features": d and d.get("features", [])})
         return {"friends": out, "blocked": []}
 
     def post_claim(self, who, b):
@@ -182,11 +183,45 @@ class Server:
         if self.accounts[b["recipient_account"]].get("device") != b["recipient_device"]:
             refuse(409, "상대의 메신저 기기가 바뀌었습니다.")
         mid = str(uuid.uuid4())
+        if b.get("attachment_id"):
+            a = self.attachments.get(b["attachment_id"])
+            if not a or a["tied"] or a["recipient"] != b["recipient_device"]:
+                refuse(409, "사진 예약이 끝났습니다.")
+            a["tied"] = True
         self.sent[(dev, b["client_id"])] = (mid, digest)
         self.inbox.append({"id": mid, "sender_account": who["account"], "sender_device": dev,
                            "recipient_device": b["recipient_device"], "kind": b["kind"], "body": b["body"],
                            "generation": b["generation"]})
         return {"id": mid, "duplicate": False}
+
+    def post_features(self, who, b):
+        self.devices[self._bound(who)]["features"] = list(b["features"])
+        return {"features": b["features"]}
+
+    def post_attach(self, who, b):
+        dev = self._bound(who)
+        key = (dev, b["upload_id"])
+        if key in self.uploads:
+            return {"id": self.uploads[key]}
+        if "image1" not in self.devices[b["recipient_device"]].get("features", []):
+            refuse(409, "상대가 아직 사진을 받을 수 없는 버전이에요.")
+        aid = str(uuid.uuid4())
+        self.uploads[key] = aid
+        self.attachments[aid] = {"recipient": b["recipient_device"], "data": b["data"], "tied": False}
+        return {"id": aid}
+
+    def post_attachment(self, who, b):
+        a = self.attachments.get(b["id"])
+        if not a or not a["tied"] or a["recipient"] != self._bound(who):
+            refuse(404, "찾을 수 없습니다.")
+        return {"data": a["data"]}
+
+    def post_attachment_ack(self, who, b):
+        dev = self._bound(who)
+        for i in b["ids"]:
+            if self.attachments.get(i, {}).get("recipient") == dev:
+                self.attachments.pop(i)
+        return {"ok": True}
 
     def get_inbox(self, who, b):
         dev = self._bound(who)
@@ -224,7 +259,7 @@ def world(tmp_path, monkeypatch):
         server.accounts[acct] = {"handle": handle}
 
     monkeypatch.setattr(account, "access_token", lambda: token(state["now"]))
-    monkeypatch.setattr(account, "call", lambda method, path, body=None, content_type=None:
+    monkeypatch.setattr(account, "call", lambda method, path, body=None, content_type=None, limit=None:
                         server.call(state["now"], method, path, body))
     yield server, people, be
     messenger.set_alive(None)
@@ -592,7 +627,7 @@ def test_an_outbox_entry_made_by_another_device_is_never_sent(talking):
     server, people, be = talking
     be("gana")
     with messenger._tx(messenger._db()) as con:
-        con.execute("INSERT INTO outbox VALUES (?,?,?,?,?,?,?,?)", (str(uuid.uuid4()), str(uuid.uuid4()),
+        con.execute("INSERT INTO outbox(client_id, sender, peer, device, generation, kind, body, created) VALUES (?,?,?,?,?,?,?,?)", (str(uuid.uuid4()), str(uuid.uuid4()),
                     people["dara"]["account"], server.accounts[people["dara"]["account"]]["device"], 1, 1, "QUJD",
                     time.time()))
     messenger.sync()
@@ -874,3 +909,140 @@ def test_moving_the_messenger_to_a_new_pc_after_confirming(world, tmp_path):
     assert messenger.move()["state"] == "ready"
     now = server.accounts[people["gana"]["account"]]["device"]
     assert now not in (None, old) and server.devices[old]["revoked"]
+
+
+def _photo(w=3000, h=2000, fmt="PNG", **save):
+    import io
+    from PIL import Image
+    im = Image.new("RGBA" if fmt == "PNG" else "RGB", (w, h), (200, 30, 30, 128) if fmt == "PNG" else (200, 30, 30))
+    out = io.BytesIO()
+    im.save(out, fmt, **save)
+    return base64.b64encode(out.getvalue()).decode()
+
+
+def test_a_photo_is_remade_sent_to_a_checked_friend_and_stored_on_both_sides(talking):
+    """사진 (2026-11-25): 다시 만든 JPEG(긴 변 2048·메타데이터 없음)만 오가고, 서버에는 암호문만. 받으면 서버에서 지운다."""
+    import io
+    from PIL import Image
+    server, people, be = talking
+    be("gana")
+    prepared = messenger.prepare_image(_photo())
+    assert (prepared["w"], prepared["h"]) == (2048, 1365) and prepared["preview"].startswith("data:image/jpeg;base64,")
+    dara_device = server.accounts[people["dara"]["account"]]["device"]
+    assert server.devices[dara_device]["features"] == ["image1"]      # 연결할 때 사진을 받을 수 있다고 알렸다
+    server.devices[dara_device]["features"] = []                     # 옛 앱이라면
+    messenger.friends()
+    with pytest.raises(messenger.MessengerError, match="받을 수 없는 버전"):
+        messenger.send_image(people["dara"]["account"], prepared["token"])
+    server.devices[dara_device]["features"] = ["image1"]
+    messenger.friends()
+    sent = messenger.send_image(people["dara"]["account"], prepared["token"])
+    assert sent["text"] is None and sent["image"]["state"] == "ok" and sent["state"] == "sent"
+    stored = next(iter(server.attachments.values()))["data"]
+    assert b"JFIF" not in base64.b64decode(stored) and b"\xff\xd8" != base64.b64decode(stored)[:2]   # 서버엔 암호문만
+    with pytest.raises(messenger.MessengerError, match="다시 골라"):           # 같은 미리보기로 두 번 보내지 않는다
+        messenger.send_image(people["dara"]["account"], prepared["token"])
+    be("dara")
+    messenger.sync()
+    got = [m for m in messenger.history(people["gana"]["account"]) if m.get("image")]
+    assert got and got[-1]["image"]["state"] == "ok" and got[-1]["text"] is None
+    src = messenger.image(got[-1]["id"])["src"]
+    pic = Image.open(io.BytesIO(base64.b64decode(src.split(",", 1)[1])))
+    assert pic.format == "JPEG" and max(pic.size) <= 2048 and not pic.info.get("exif")
+    assert not server.attachments, "받아서 저장한 뒤 서버에서 지운다"
+    assert messenger.friends() is not None
+
+
+def test_photos_that_are_not_still_jpeg_or_png_or_are_too_big_are_refused(world):
+    server, people, be = world
+    be("gana")
+    for bad, why in ((base64.b64encode(b"GIF89a....").decode(), "JPG·PNG"),
+                     (_photo(8000, 6000), "너무 커요")):
+        with pytest.raises(messenger.MessengerError, match=why):
+            messenger.prepare_image(bad)
+    with pytest.raises(messenger.MessengerError, match="20MB"):
+        messenger.prepare_image("A" * (28 * 1024 * 1024))
+
+
+def test_a_tampered_photo_is_marked_broken_not_shown(talking):
+    server, people, be = talking
+    be("dara")
+    messenger._announced.clear()
+    messenger.connect()
+    be("gana")
+    messenger.friends()
+    messenger.send_image(people["dara"]["account"], messenger.prepare_image(_photo(300, 200, "JPEG"))["token"])
+    a = next(iter(server.attachments.values()))
+    raw = bytearray(base64.b64decode(a["data"]))
+    raw[10] ^= 1
+    a["data"] = base64.b64encode(bytes(raw)).decode()
+    be("dara")
+    messenger.sync()
+    got = [m for m in messenger.history(people["gana"]["account"]) if m.get("image")]
+    assert got[-1]["image"]["state"] == "broken"
+    with pytest.raises(messenger.MessengerError):
+        messenger.image(got[-1]["id"])
+
+
+
+def test_remade_photos_carry_no_comment_or_exif_on_either_side():
+    """JPEG 주석(COM)·EXIF 는 보낼 때도 받을 때도 남지 않는다 (codex1 사진 회신 2 P1-1)."""
+    import io
+    from PIL import Image
+    from vader.core import messenger_image
+    out = io.BytesIO()
+    exif = Image.Exif()
+    exif[0x010F] = "camera-maker"
+    Image.new("RGB", (16, 16), (1, 2, 3)).save(out, "JPEG", comment=b"review-marker", exif=exif.tobytes())
+    sent, _, _ = messenger_image.clean(out.getvalue())
+    received, _, _ = messenger_image.clean(sent, received=True)
+    for jpeg in (sent, received):
+        assert b"review-marker" not in jpeg and b"camera-maker" not in jpeg and b"Exif" not in jpeg
+
+
+def test_a_malformed_photo_description_does_not_stop_the_messages_after_it(talking):
+    """설명이 배열·null·틀린 형식이어도 그 글 하나에서 끝나고, 뒤의 글까지 저장·ack 된다 (codex1 사진 회신 2 P1-2)."""
+    from vader.core import messenger_image
+    server, people, be = talking
+    be("gana")
+    for bad in ("[1,2]", "null", '{"v":1,"id":5}', '{"v":1,"id":"a","key":"b","nonce":"c","sha256":"d","w":99999,"h":1}'):
+        messenger.send(people["dara"]["account"], messenger_image.MARK + bad)
+    messenger.send(people["dara"]["account"], "그다음 글")
+    be("dara")
+    messenger.sync()
+    texts = [m.get("text") for m in messenger.history(people["gana"]["account"])]
+    assert "그다음 글" in texts and not server.inbox, "모두 저장하고 ack 했다"
+
+
+def test_a_deeply_nested_description_and_a_lost_ack_do_not_stall_photos(talking, monkeypatch):
+    """너무 깊은 설명은 그 글에서 끝, 사진 ack 응답을 잃어도 저장한 상태는 화면에 알리고 ack 는 다음에 (codex1 사진 회신 3)."""
+    from vader.core import messenger_image
+    server, people, be = talking
+    assert messenger_image.parse(messenger_image.MARK + "[" * 100000 + "]" * 100000) is None   # 받은 글은 길이 제한 없이 올 수 있다
+    be("gana")
+    messenger.send_image(people["dara"]["account"], messenger.prepare_image(_photo(300, 200, "JPEG"))["token"])
+    be("dara")
+    server.fail_on = "attachment_ack"
+    assert messenger.sync()["images"] == 1
+    assert server.attachments, "ack 를 못 했으니 서버에 남아 있다"
+    messenger.sync()
+    assert not server.attachments, "다음 받기 때 ack"
+
+
+def test_an_oversized_photo_answer_ends_as_broken_not_retried_forever(talking, monkeypatch):
+    server, people, be = talking
+    be("gana")
+    messenger.send_image(people["dara"]["account"], messenger.prepare_image(_photo(300, 200, "JPEG"))["token"])
+    be("dara")
+    real = account.call
+
+    def too_big(*a, **k):
+        if a[1].endswith("/attachment/"):
+            error = account.AccountError("서버 응답이 너무 큽니다.")
+            error.status = 413
+            raise error
+        return real(*a, **k)
+    monkeypatch.setattr(account, "call", too_big)
+    messenger.sync()
+    got = [m for m in messenger.history(people["gana"]["account"]) if m.get("image")]
+    assert got[-1]["image"]["state"] == "broken"

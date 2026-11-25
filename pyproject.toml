@@ -18,7 +18,7 @@ dependencies = []
 # cryptography: 공유용 룬의 운영자 서명·확인 (vader/core/signing.py).
 # pywinpty: 제작소 안 콘솔 (ConPTY 로 Claude Code·Codex 를 화면 안에서 띄운다).
 # vodozemac: 메신저 종단간 암호 (Matrix Olm). 판 고정 — 올리면 저장된 세션이 열리는지 먼저 시험 (3a).
-desktop = ["pywebview>=6.0,<7", "mcp>=1.20,<2", "openpyxl>=3.1", "cryptography>=42", "pywinpty>=2.0; sys_platform == 'win32'", "pypdfium2>=4", "vodozemac==0.10.0", "pystray>=0.19"]
+desktop = ["pywebview>=6.0,<7", "mcp>=1.20,<2", "openpyxl>=3.1", "cryptography>=42", "pillow>=10", "pywinpty>=2.0; sys_platform == 'win32'", "pypdfium2>=4", "vodozemac==0.10.0", "pystray>=0.19"]
 claude = ["anthropic>=0.49.0"]
 gemini = ["google-genai>=1.0.0"]
 # 룬별 묶음. 없이 설치해도 코어는 돌고 그 룬만 로드에 실패한다.

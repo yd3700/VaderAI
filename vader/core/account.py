@@ -223,7 +223,7 @@ def account() -> dict | None:
 
 
 def call(method: str, path: str, body: bytes | None = None, content_type: str = "application/json",
-         _again: bool = True) -> dict:
+         _again: bool = True, limit: int | None = None) -> dict:
     """로그인한 계정으로 우리 웹 API 를 부른다 (목록 제출·승인 등). 로그인 안 했으면 AccountError."""
     origin = site()                                 # 한 번 읽은 주소로 끝까지 (codex1 P2-5)
     token, device = _access_for(origin)
@@ -233,7 +233,7 @@ def call(method: str, path: str, body: bytes | None = None, content_type: str = 
     if body is not None:
         headers["Content-Type"] = content_type
     try:
-        return _request(origin, method, path, body=body, headers=headers)
+        return _request(origin, method, path, body=body, headers=headers, limit=limit)
     except AccountError as exc:
         if exc.status == 401:                       # 계정 비활성·삭제 — 요청을 시작할 때의 토큰일 때만 버린다
             if _again and (method, path) == ("GET", ME) and _stored(origin) not in (None, device):
@@ -242,7 +242,7 @@ def call(method: str, path: str, body: bytes | None = None, content_type: str = 
                 with _lock:
                     if _access.get("token") == token:   # 남은 접근 토큰이 옛 로그인 것이면 새 기기 토큰으로 다시 받게
                         _access.clear()
-                return call(method, path, body, content_type, _again=False)
+                return call(method, path, body, content_type, _again=False, limit=limit)
             _forget(origin, device, exc.reason)
         raise
 
@@ -357,7 +357,9 @@ def _post(origin: str, path: str, body: dict) -> dict:
                     headers={"Content-Type": "application/json"})
 
 
-def _request(origin: str, method: str, path: str, body: bytes | None = None, headers: dict | None = None) -> dict:
+def _request(origin: str, method: str, path: str, body: bytes | None = None, headers: dict | None = None,
+             limit: int | None = None) -> dict:
+    """limit: 응답 본문을 읽는 동안 상한 — 넘으면 다 읽지 않고 멈춘다 (사진 받기, codex1 사진 회신 2 P2-6)."""
     headers = dict(headers or {})
     bypass = secrets.get(BYPASS_NAME, device=True) if secrets.available() else None
     if bypass:
@@ -367,10 +369,15 @@ def _request(origin: str, method: str, path: str, body: bytes | None = None, hea
     request = urllib.request.Request(origin + path, data=body, method=method, headers=headers)
     try:
         with _opener.open(request, timeout=TIMEOUT_SECONDS) as response:
-            return json.loads(response.read())
+            data = response.read(limit + 1) if limit else response.read()
+            if limit and len(data) > limit:
+                error = AccountError("서버 응답이 너무 큽니다.")
+                error.status = 413                        # 크기 위반 — 다시 받아도 같다 (연결 오류와 구분)
+                raise error
+            return json.loads(data)
     except urllib.error.HTTPError as exc:
         try:   # 서버가 보낸 한국어 이유 (토큰은 담기지 않는다)
-            answer = json.loads(exc.read())
+            answer = json.loads(exc.read(64 * 1024))     # 오류 설명도 읽는 동안 상한 (codex1 사진 회신 3 P2-3)
             reason = str(answer.get("message") or "")[:300]
             kind = answer.get("reason") if exc.code == 401 and answer.get("reason") == "replaced" else None
         except (ValueError, OSError, AttributeError):

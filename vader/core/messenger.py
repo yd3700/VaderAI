@@ -31,7 +31,7 @@ import time
 import uuid
 from contextlib import contextmanager
 
-from vader.core import account, config, secrets
+from vader.core import account, config, messenger_image, secrets
 
 API = "/api/messenger/"
 STORE_KEY = "messenger.store_key"
@@ -64,7 +64,13 @@ CREATE TABLE IF NOT EXISTS seen (account TEXT PRIMARY KEY, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS groups (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS share_pending (message TEXT PRIMARY KEY, account TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS group_members (account TEXT PRIMARY KEY, gid TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, data BLOB, state TEXT NOT NULL, w INTEGER, h INTEGER);
+CREATE TABLE IF NOT EXISTS image_pending (message TEXT PRIMARY KEY, attachment TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS image_ack (attachment TEXT PRIMARY KEY);
 """
+#: 앞선 판의 표에 더한 열 (사진, 2026-11-25) — CREATE TABLE IF NOT EXISTS 는 있는 표에 열을 더하지 않는다
+_COLUMNS = (("outbox", "attachment", "TEXT"), ("peers", "features", "TEXT"))
+FEATURES = ["image1"]                # 이 앱이 받을 수 있다고 서버에 알리는 형식
 
 
 class MessengerError(RuntimeError):
@@ -154,6 +160,9 @@ def _db() -> sqlite3.Connection:
     con = sqlite3.connect(config.data_dir() / "messenger.sqlite3", isolation_level=None, timeout=10)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    for table, column, kind in _COLUMNS:
+        if column not in {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
     return con
 
 
@@ -191,10 +200,10 @@ def _me(con):
     return row, (_vz().Account.from_pickle(row["pickle"], _key()) if row else None)
 
 
-def _api(method: str, action: str, body: dict | None = None) -> dict:
+def _api(method: str, action: str, body: dict | None = None, limit: int | None = None) -> dict:
     _live()                    # 네트워크로 나가기 전마다
     # 끝의 / 를 붙인다 — 웹은 trailingSlash 라 없으면 308 이고, 앱은 리디렉션을 따라가지 않는다 (0.1.25 실기 시험)
-    return account.call(method, API + action + "/", json.dumps(body).encode() if body is not None else None)
+    return account.call(method, API + action + "/", json.dumps(body).encode() if body is not None else None, limit=limit)
 
 
 def _who() -> tuple[str, str]:
@@ -244,7 +253,13 @@ def connect() -> dict:
         with _tx(con):           # 등록 응답을 못 받았어도 서버가 이 기기를 알면 등록된 것이다
             con.execute("UPDATE me SET registered=1, pickle=? WHERE id=1", (me.pickle(_key()),))
         _top_up(con, me, row["device"], int(status["one_time_keys"]))
+        if _announced.get("device") != row["device"]:
+            _api("POST", "features", {"features": FEATURES})     # 사진을 받을 수 있다고 — 옛 앱에는 사진이 오지 않게
+            _announced["device"] = row["device"]
     return {"state": "ready", "handle": status["handle"], "device": row["device"]}
+
+
+_announced: dict = {}
 
 
 def move() -> dict:
@@ -373,11 +388,12 @@ def _remember(con, listed: list[dict]) -> None:
             old = con.execute("SELECT * FROM peers WHERE account=?", (peer,)).fetchone()
             if old is not None and not device:      # 서버가 기기를 안 줬다(아직 친구 아님·해제) — 붙잡은 키는 둔다
                 device, ed, curve = old["device"], old["ed"], old["curve"]
+            features = ",".join(x for x in (f.get("features") or []) if isinstance(x, str)) if f.get("device_id") else (old["features"] if old is not None else None)
             con.execute(
-                """INSERT INTO peers(account, handle, state, mine, generation, device, ed, curve) VALUES (?,?,?,?,?,?,?,?)
+                """INSERT INTO peers(account, handle, state, mine, generation, device, ed, curve, features) VALUES (?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(account) DO UPDATE SET handle=excluded.handle, state=excluded.state, mine=excluded.mine,
-                  generation=excluded.generation, device=excluded.device, ed=excluded.ed, curve=excluded.curve""",
-                (peer, f.get("handle"), f["state"], int(bool(f.get("mine"))), int(f["generation"]), device, ed, curve))
+                  generation=excluded.generation, device=excluded.device, ed=excluded.ed, curve=excluded.curve, features=excluded.features""",
+                (peer, f.get("handle"), f["state"], int(bool(f.get("mine"))), int(f["generation"]), device, ed, curve, features))
         for row in con.execute("SELECT account FROM peers").fetchall():
             if row["account"] not in seen:
                 con.execute("UPDATE peers SET state='ended' WHERE account=?", (row["account"],))
@@ -395,6 +411,7 @@ def _list(con) -> list[dict]:
                     "changed": bool(p["verified_ed"]) and p["verified_ed"] != p["ed"],
                     "last": p["last"], "seen": p["seen"],   # 받은 시각·읽은 시각 — 화면이 '안 읽음' 을 정한다
                     "group": p["grp"],
+                    "images": "image1" in (p["features"] or "").split(","),
                     "keywords": _keywords(con, p["account"])})
     return out
 
@@ -492,7 +509,7 @@ def _keywords(con, peer: str, top: int = 3) -> list[str]:
     count: dict[str, int] = {}
     for r in con.execute("SELECT text FROM messages WHERE peer=? AND text IS NOT NULL ORDER BY at DESC LIMIT 300", (peer,)):
         text = _unseal(r["text"])
-        if text.startswith(SHARE_MARK):
+        if text.startswith(SHARE_MARK) or text.startswith(messenger_image.MARK):
             continue
         for w in _WORD.findall(text):
             w = _stem(w.lower())
@@ -552,20 +569,148 @@ def send(account_id: str, text: str) -> dict:
             raise MessengerError("친구에게만 보낼 수 있습니다.")
         if p["verified_ed"] != p["ed"]:
             raise MessengerError("안전 번호를 확인한 뒤에 보낼 수 있습니다.")
-        session = _latest(con, p["device"])
-        if session is None:
-            session = _open_session(me, p)
-        kind, body = session.encrypt(text.encode()).to_parts()
-        client_id, now = str(uuid.uuid4()), time.time()
+        return _queue(con, me, row, p, text)
+
+
+def _queue(con, me, row, p, text: str, attachment: str | None = None, image: tuple | None = None) -> dict:
+    """암호화해 보낼 상자에 넣고 올린다. 사진이면 첨부 번호를 보내기에 싣고, 내 사본을 함께 저장한다."""
+    session = _latest(con, p["device"])
+    if session is None:
+        session = _open_session(me, p)
+    kind, body = session.encrypt(text.encode()).to_parts()
+    client_id, now = str(uuid.uuid4()), time.time()
+    with _tx(con):
+        con.execute("INSERT OR REPLACE INTO sessions(sid, device, pickle, used) VALUES (?,?,?,?)",
+                    (session.session_id, p["device"], session.pickle(_key()), now))
+        con.execute("INSERT INTO outbox(client_id, sender, peer, device, generation, kind, body, created, attachment) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (client_id, row["device"], p["account"], p["device"], p["generation"], kind, base64.b64encode(body).decode(), now, attachment))
+        con.execute("INSERT INTO messages VALUES (?,?,1,?,?,'queued',?,1)",
+                    (client_id, p["account"], _seal(text), now, p["device"]))
+        if image is not None:
+            jpeg, w, h = image
+            con.execute("INSERT INTO images(id, data, state, w, h) VALUES (?,?,'ok',?,?)",
+                        (client_id, _seal(base64.b64encode(jpeg).decode()), w, h))
+    _flush(con, row["device"])
+    return _message(con.execute(_MESSAGE_ROW + " WHERE m.id=?", (client_id,)).fetchone())
+
+
+# ── 사진 (2026-11-25) ──
+# 화면이 고른 사진을 먼저 다시 만들어 미리보기로 보여 주고(원본은 화면에 안 감), 사람이 [보내기] 를 누르면 그 결과를 보낸다.
+_prepared: dict = {}                  # token → (jpeg, w, h) — 메모리에만, 잠그면 비운다
+_PREPARED_MAX = 10
+
+
+def prepare_image(data: str) -> dict:
+    """화면이 넘긴 원본(base64) → 다시 만든 JPEG 미리보기와 표. 원본 크기를 디코딩 전에 막는다."""
+    if not isinstance(data, str) or len(data) > (messenger_image.RAW_MAX * 4) // 3 + 8:
+        raise MessengerError("사진은 20MB 까지 보낼 수 있어요.")
+    try:
+        raw = base64.b64decode(data, validate=True)
+        jpeg, w, h = messenger_image.clean(raw)
+    except messenger_image.ImageRefused as exc:
+        raise MessengerError(str(exc)) from None
+    except ValueError:
+        raise MessengerError("사진을 읽지 못했어요.") from None
+    while len(_prepared) >= _PREPARED_MAX:
+        _prepared.pop(next(iter(_prepared)))
+    token = str(uuid.uuid4())
+    _prepared[token] = (jpeg, w, h)
+    return {"token": token, "w": w, "h": h, "preview": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}
+
+
+def drop_prepared(token: str = "") -> None:
+    """미리보기를 버린다 (취소·잠금·계정 전환). 비우면 전부."""
+    if token:
+        _prepared.pop(token, None)
+    else:
+        _prepared.clear()
+
+
+def send_image(account_id: str, token: str) -> dict:
+    """미리보기로 확인한 사진을 친구에게. 안전 번호를 확인한, 사진을 받을 수 있는 기기에만."""
+    image = _prepared.get(token)
+    if image is None:
+        raise MessengerError("사진을 다시 골라 주세요.")
+    with _one() as con:
+        row, me = _me(con)
+        p = con.execute("SELECT * FROM peers WHERE account=?", (account_id,)).fetchone()
+        if me is None or not row["registered"]:
+            raise MessengerError("메신저를 먼저 여세요.")
+        if p is None or p["state"] != "accepted" or not p["ed"]:
+            raise MessengerError("친구에게만 보낼 수 있습니다.")
+        if p["verified_ed"] != p["ed"]:
+            raise MessengerError("안전 번호를 확인한 뒤에 보낼 수 있습니다.")
+        if "image1" not in (p["features"] or "").split(","):
+            raise MessengerError("상대가 아직 사진을 받을 수 없는 버전이에요. 상대가 앱을 업데이트하면 보낼 수 있어요.")
+        jpeg, w, h = image
+        cipher, meta = messenger_image.seal(jpeg)
+        upload = {"upload_id": str(uuid.uuid4()), "recipient_account": account_id, "recipient_device": p["device"],
+                  "generation": p["generation"], "data": base64.b64encode(cipher).decode()}
+        try:
+            attachment = _api("POST", "attach", upload)["id"]
+        except account.AccountError as exc:
+            if exc.status is not None:
+                raise
+            attachment = _api("POST", "attach", upload)["id"]    # 응답을 잃었다 — 같은 번호·같은 바이트로 한 번 더(같은 예약)
+        _prepared.pop(token, None)
+        return _queue(con, me, row, p, messenger_image.payload(attachment, meta, w, h), attachment, (jpeg, w, h))
+
+
+def image(message_id: str) -> dict:
+    """저장한 사진(다시 만든 JPEG) — 화면에 그릴 data URL."""
+    with _one() as con:
+        r = con.execute("SELECT data, state FROM images WHERE id=?", (message_id,)).fetchone()
+        if r is None or r["state"] != "ok" or r["data"] is None:
+            raise MessengerError("사진을 아직 받지 못했어요.")
+        return {"src": "data:image/jpeg;base64," + _unseal(r["data"])}
+
+
+def _fetch_images(con) -> int:
+    """받은 사진 글마다 암호문을 받아 확인·다시 만들기 → 저장 → 서버에서 지우기. 연결 문제는 다음 받기 때 다시.
+    상태가 정해진 사진 수 — 화면이 기다리던 말풍선을 다시 그린다 (codex1 사진 회신 2 P2-5)."""
+    settled = 0
+    for r in con.execute("SELECT message, attachment FROM image_pending").fetchall():
+        msg = con.execute("SELECT text FROM messages WHERE id=?", (r["message"],)).fetchone()
+        meta = messenger_image.parse(_unseal(msg["text"])) if msg and msg["text"] is not None else None
+        state, data, size = "broken", None, (None, None)
+        if meta is not None:
+            try:
+                got = _api("POST", "attachment", {"id": r["attachment"]},
+                           limit=(messenger_image.CIPHER_MAX * 4) // 3 + 1024)   # 읽는 동안 상한
+            except account.AccountError as exc:
+                if exc.status in (403, 404, 409, 410):
+                    got = None
+                    state = "expired"          # 기한이 지났거나 지워졌다 — 다시 오지 않는다
+                elif exc.status == 413:
+                    got = None
+                    state = "broken"           # 정한 크기를 넘었다 — 그 사진만 끝내고 뒤의 사진을 처리
+                else:
+                    return settled             # 연결·제한·서버 사정 — 다음 받기 때 이어서
+            if got is not None:
+                try:
+                    blob = str(got.get("data") or "")
+                    if len(blob) > (messenger_image.CIPHER_MAX * 4) // 3 + 8:
+                        raise messenger_image.ImageRefused("사진 크기가 맞지 않아요.")
+                    jpeg = messenger_image.open_sealed(base64.b64decode(blob, validate=True), meta)
+                    jpeg, w, h = messenger_image.clean(jpeg, received=True)
+                    state, data, size = "ok", _seal(base64.b64encode(jpeg).decode()), (w, h)
+                except (messenger_image.ImageRefused, ValueError):
+                    state = "broken"
         with _tx(con):
-            con.execute("INSERT OR REPLACE INTO sessions(sid, device, pickle, used) VALUES (?,?,?,?)",
-                        (session.session_id, p["device"], session.pickle(_key()), now))
-            con.execute("INSERT INTO outbox VALUES (?,?,?,?,?,?,?,?)", (client_id, row["device"], account_id,
-                        p["device"], p["generation"], kind, base64.b64encode(body).decode(), now))
-            con.execute("INSERT INTO messages VALUES (?,?,1,?,?,'queued',?,1)",
-                        (client_id, account_id, _seal(text), now, p["device"]))
-        _flush(con, row["device"])
-        return _message(con.execute("SELECT * FROM messages WHERE id=?", (client_id,)).fetchone())
+            con.execute("INSERT OR REPLACE INTO images(id, data, state, w, h) VALUES (?,?,?,?,?)",
+                        (r["message"], data, state, *size))
+            con.execute("DELETE FROM image_pending WHERE message=?", (r["message"],))
+            if state != "expired":
+                con.execute("INSERT OR IGNORE INTO image_ack(attachment) VALUES (?)", (r["attachment"],))
+        settled += 1
+    ids = [r["attachment"] for r in con.execute("SELECT attachment FROM image_ack LIMIT 100").fetchall()]
+    if ids:
+        try:
+            _api("POST", "attachment_ack", {"ids": ids})  # 저장한 뒤에만 — 실패하면 다음 받기 때 다시
+            con.execute(f"DELETE FROM image_ack WHERE attachment IN ({','.join('?' * len(ids))})", ids)
+        except account.AccountError:
+            pass                                          # ack 대기는 남기고, 이미 정한 사진 상태는 화면에 알린다 (회신 3 P2-2)
+    return settled
 
 
 def _latest(con, device: str):
@@ -598,7 +743,8 @@ def _flush(con, my_device: str) -> None:
             try:
                 _api("POST", "send", {"client_id": o["client_id"], "recipient_account": o["peer"],
                                       "recipient_device": o["device"], "generation": o["generation"],
-                                      "kind": o["kind"], "body": o["body"]})
+                                      "kind": o["kind"], "body": o["body"],
+                                      **({"attachment_id": o["attachment"]} if o["attachment"] else {})})
             except account.AccountError as exc:
                 if exc.status not in (400, 403, 409):
                     return               # 연결·제한(429)·아직 다시 묶기 전(412)·서버 사정 — 다음에
@@ -641,8 +787,9 @@ def sync() -> dict:
                 break
         if used_keys:
             _top_up(con, me, row["device"], int(_api("GET", "me")["one_time_keys"]))
+        images = _fetch_images(con)    # 받은 사진 — 연결 문제면 다음에 이어서
         waiting = _apply_shares(con)   # 지난번에 적용 못 한 것도 — 받은 글이 없어도 다시 시도
-        return {"received": got, **({"shares_waiting": waiting} if waiting else {})}
+        return {"received": got, **({"images": images} if images else {}), **({"shares_waiting": waiting} if waiting else {})}
 
 
 def _apply_shares(con) -> int:
@@ -692,6 +839,10 @@ def _receive(con, me, known, m) -> int:
                     (m["id"], known["account"], _seal(plain) if plain is not None else None, at,
                      "received" if plain is not None else "unreadable", known["device"], int(known["verified"])))
         from vader.core.todo import SHARE_MARK
+        picture = messenger_image.parse(plain) if plain is not None else None
+        if picture is not None and known["verified"]:
+            # 사진 — 글과 같은 거래에서 받기 대기로. 안전 번호를 확인한 상대의 사진만 받는다 (codex1 사진 회신)
+            con.execute("INSERT OR IGNORE INTO image_pending(message, attachment) VALUES (?,?)", (m["id"], picture["id"]))
         if plain is not None and known["verified"] and plain.startswith(SHARE_MARK):
             # 할 일 공유 글 — 메시지와 같은 트랜잭션에서 적용 대기로 (codex1 todo-share 회신 2: 저장과 대기 사이에 죽어도 안 잃는다)
             con.execute("INSERT OR IGNORE INTO share_pending(message, account) VALUES (?,?)", (m["id"], known["account"]))
@@ -728,12 +879,22 @@ def _decrypt(con, me, known, m):
 
 def history(account_id: str, limit: int = 200) -> list[dict]:
     with _one() as con:
-        rows = con.execute("SELECT * FROM messages WHERE peer=? ORDER BY at DESC LIMIT ?",
+        rows = con.execute(_MESSAGE_ROW + " WHERE m.peer=? ORDER BY m.at DESC LIMIT ?",
                            (account_id, max(1, min(int(limit), 500)))).fetchall()
         return [_message(r) for r in reversed(rows)]
 
 
+_MESSAGE_ROW = "SELECT m.*, i.state AS image_state, i.w AS image_w, i.h AS image_h FROM messages m LEFT JOIN images i ON i.id=m.id"
+
+
 def _message(r) -> dict:
-    """trusted: 받을 때 보낸 사람의 신원키를 안전 번호로 확인해 둔 상태였나. 내가 보낸 것은 늘 참."""
-    return {"id": r["id"], "outgoing": bool(r["outgoing"]), "at": r["at"], "state": r["state"],
-            "trusted": bool(r["trusted"]), "text": _unseal(r["text"]) if r["text"] is not None else None}
+    """trusted: 받을 때 보낸 사람의 신원키를 안전 번호로 확인해 둔 상태였나. 내가 보낸 것은 늘 참.
+    사진 글은 열쇠가 든 설명을 화면에 내지 않는다 — image: {state(ok·waiting·expired·broken·unchecked), w, h} 만."""
+    text = _unseal(r["text"]) if r["text"] is not None else None
+    out = {"id": r["id"], "outgoing": bool(r["outgoing"]), "at": r["at"], "state": r["state"],
+           "trusted": bool(r["trusted"]), "text": text}
+    picture = messenger_image.parse(text) if text is not None else None
+    if picture is not None:
+        state = r["image_state"] or ("waiting" if r["trusted"] else "unchecked")
+        out.update(text=None, image={"state": state, "w": r["image_w"] or picture["w"], "h": r["image_h"] or picture["h"]})
+    return out

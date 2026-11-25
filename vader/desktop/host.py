@@ -149,6 +149,11 @@ class DesktopAPI:
                 'messenger_history': messenger.history,
                 'messenger_sync': messenger.sync,
                 'messenger_seen': messenger.mark_seen,
+                # 사진 (2026-11-25): 고른 사진을 다시 만들어 미리보기 → 확인 뒤 보내기. 원본은 화면에 돌려주지 않는다
+                'messenger_prepare_image': messenger.prepare_image,
+                'messenger_drop_image': messenger.drop_prepared,
+                'messenger_send_image': messenger.send_image,
+                'messenger_image': messenger.image,
                 'messenger_groups': messenger.groups,
                 'messenger_group_save': messenger.group_save,
                 'messenger_group_delete': messenger.group_delete,
@@ -377,6 +382,7 @@ class DesktopAPI:
         # 화면 전환이 실패해도 업무 화면은 다음 poll 에서 잠김 응답을 받아 스스로 문으로 간다 (app.js api())
         # 화면 자동화가 읽어 둔 화면(ref 파일)도 지운다 — 잠긴 뒤에 남기지 않는다 (agent-desktop P1-3)
         steps = [self._drop_badge, screen_auto.sweep, lambda: self._window and self._window.evaluate_js("location.replace('gate.html')")]
+        steps.append(messenger.drop_prepared)   # 보내기 전 사진 미리보기도 — 잠긴 뒤에 남기지 않는다
         if self._controller:
             steps.insert(1, self._controller.record_discard)
         for step in steps:
