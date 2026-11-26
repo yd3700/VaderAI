@@ -168,7 +168,8 @@ def listing() -> dict:
     return {"enabled": True, "fresh": snapshot is not None, "releases": releases, "error": _last["error"]}
 
 
-def install(rune_id: str, version: str, rune_dir: Path | None = None, archive_sha256: str | None = None):
+def install(rune_id: str, version: str, rune_dir: Path | None = None, archive_sha256: str | None = None,
+            replace_local: bool = False):
     """허용된 계정으로 패키지를 받아 서명·목록·파일을 모두 확인한 뒤 설치한다.
 
     `archive_sha256` — 확인 창에서 사람이 본 패키지. 그사이 목록이 바뀌었으면(재발행·회수) 받지 않고 다시 고르게 한다."""
@@ -205,7 +206,7 @@ def install(rune_id: str, version: str, rune_dir: Path | None = None, archive_sh
         archive = Path(tmp) / "package.zip"
         archive.write_bytes(data)
         try:
-            done = catalog.install_catalog(archive, document, rune_dir=rune_dir)
+            done = catalog.install_catalog(archive, document, rune_dir=rune_dir, replace_local=replace_local)
         except catalog.CatalogError as exc:
             raise SyncError(str(exc)) from None
     if (done.manifest.id, done.manifest.version) != (rune_id, version):

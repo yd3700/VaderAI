@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -606,8 +607,28 @@ def check_release(release_raw: bytes, now: datetime | None = None, expect: tuple
     return doc, release, listed[0]
 
 
+def _linked(path: Path) -> bool:
+    """그 항목 **자체**가 심볼릭 링크·정션(재분석 지점)인가 — 상위 폴더는 보지 않는다 (codex1 회신 3·4).
+    `is_junction` 은 3.12 부터라 Windows 속성 비트로 본다."""
+    import stat
+    info = os.lstat(path)
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _same_recording(mine: Path, theirs: Path) -> bool:
+    """이 PC 의 녹화가 패키지의 녹화와 같은가 — 발행은 녹화를 정리해 다시 쓰므로 같은 규칙으로 정리해 비교한다."""
+    from vader.core import release
+    if not theirs.is_file():
+        return False
+    try:
+        found = json.loads(theirs.read_text(encoding="utf-8"))
+        return found in (json.loads(mine.read_text(encoding="utf-8")), json.loads(release._dump(release._clean(mine))))
+    except Exception:  # noqa: BLE001 — 정리할 수 없는 녹화는 같다고 볼 수 없다
+        return False
+
+
 def install_catalog(archive: Path, release_raw: bytes, now: datetime | None = None,
-                    rune_dir: Path | None = None):
+                    rune_dir: Path | None = None, replace_local: bool = False):
     """목록에서 받은 zip 을 검증해 설치한다. 실패하면 일반 설치로 넘어가지 않는다.
 
     설치는 **실전 승인이 아니다** — 그 PC 에서 연습한 뒤 사람이 봉인해야 실전이 된다 (기존 `seal`).
@@ -624,10 +645,14 @@ def install_catalog(archive: Path, release_raw: bytes, now: datetime | None = No
     # 이 PC 에서 직접 설치한 같은 id 를 목록 룬으로 조용히 바꾸지 않는다 — 지운 뒤에 받는다 (마스터 2026-10-30)
     # ponytail: 검사와 교체 사이는 화면의 controller.lock 으로만 직렬화된다. 다른 프로세스가 같은 룬 폴더에
     # 설치하는 경로가 생기면 설치·목록 설치·제거가 공유하는 파일 잠금으로 올린다 (codex1 6단계 P2-3)
-    if local_rune(rune_id, rune_dir):
+    # replace_local — 사람이 확인 창에서 '직접 설치한 룬을 광장 버전으로 바꾸기' 를 고른 경우만 (마스터 2026-11-26)
+    local = local_rune(rune_id, rune_dir)
+    if local and not replace_local:
         raise CatalogError("이 PC 에 직접 설치한 같은 룬이 있습니다. 내 룬에서 제거한 뒤 광장에서 받으세요.")
 
     previous = origins().get(rune_id)
+    target = (rune_dir or config.rune_dir()) / rune_id
+    kept = None
     with tempfile.TemporaryDirectory(prefix="vader-catalog-") as tmp:
         fixed = Path(tmp) / "package.zip"               # 바꿀 수 없는 사본 — 끝까지 이것만 쓴다
         shutil.copyfile(archive, fixed)
@@ -645,6 +670,27 @@ def install_catalog(archive: Path, release_raw: bytes, now: datetime | None = No
         ) != (rune_id, version, release["profile"], sorted(release["permissions"])):
             raise CatalogError("패키지 manifest 가 발행 문서와 다릅니다")
         source = installer._unpack(fixed, Path(tmp) / "unpacked")
+        if local:
+            # 링크·정션(룬 폴더 자신 포함)이 있으면 폴더 밖 자료를 끌어올 수 있다 — 무엇이든 읽기 전에 거절 (회신 2 P2-2, 회신 3)
+            if _linked(target) or any(_linked(Path(top, n)) for top, dirs, files in os.walk(target) for n in dirs + files):
+                raise CatalogError("룬 폴더에 바로 가기 링크가 있어 바꾸지 않았어요.")
+            # 룬 폴더 안의 녹화는 바꾸면 사라진다 — 패키지에 같은 녹화(발행 때처럼 정리한 것)가 없으면 바꾸지 않는다
+            mine = target / "recordings"
+            if any(not _same_recording(p, source / "recordings" / p.name) for p in (mine.glob("*.json") if mine.is_dir() else ())):
+                raise CatalogError("이 PC 에서 고친 녹화가 있어 광장 버전으로 바꾸지 않았어요. 녹화를 옮겨 둔 뒤 다시 하세요.")
+            # 화면이 본 값이 아니라 지금 디스크의 버전으로 — 그사이 더 새 판을 직접 깔았으면 덮지 않는다 (codex1 회신 P2-3)
+            have = _version(installer._installed_version(target))     # 문자열 리터럴로 읽히는 판만 — 모르면 바꾸지 않는다 (회신 2 P2-1)
+            if not have:
+                raise CatalogError("이 PC 의 룬 버전을 읽지 못해 바꾸지 않았어요.")
+            if _version(version) <= have:
+                raise CatalogError("이 PC 의 룬이 광장 버전과 같거나 더 새것이라 바꾸지 않았어요.")
+            # 룬 폴더 안의 다른 파일까지 — 지금 폴더를 룬 경로 밖에 통째로 보관한다 (codex1 회신 P1-2)
+            kept = config.data_dir() / "replaced-runes" / f"{rune_id}-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+            try:
+                shutil.copytree(target, kept, symlinks=True, ignore=shutil.ignore_patterns("__pycache__"))
+            except Exception:
+                shutil.rmtree(kept, ignore_errors=True)
+                raise
         # import 전에 소스의 선언을 AST 로 본다
         declared = (installer._manifest_string(source, "id"), installer._manifest_string(source, "version"),
                     sorted(installer._declared(source)), profile.declared(source) or "legacy")
@@ -652,12 +698,16 @@ def install_catalog(archive: Path, release_raw: bytes, now: datetime | None = No
             raise CatalogError("소스의 선언이 발행 문서와 다릅니다")
 
         entry = {"state": "pending", "archive_sha256": release["archive_sha256"], "public_key": doc["public_key"],
-                 "version": version, "fingerprint": manifest["fingerprint"], "release": doc}
+                 "version": version, "fingerprint": manifest["fingerprint"], "release": doc,
+                 **({"replaced_local": str(kept)} if kept else {})}
+        before = seal.fingerprint(target)
         record_origin(rune_id, entry)                   # 먼저 '설치 중' — 중간에 꺼지면 판정표가 막는다
         try:
             done = installer.install(source, rune_dir, merge_recordings=False, catalog_install=True)
         except Exception:
-            _restore_origin(rune_id, previous)          # 설치기가 파일을 되돌렸다 — 원장도 되돌린다 (P2-2)
+            # 폴더가 정말 예전 그대로일 때만 원장을 되돌린다. 새 파일이 남았으면 pending 으로 잠근다 (codex1 회신 P1-1)
+            if seal.fingerprint(target) == before:
+                _restore_origin(rune_id, previous)
             raise
         actual = (done.manifest.id, done.manifest.version, sorted(done.manifest.permissions))
         if seal.fingerprint(done.path) != manifest["fingerprint"] or actual != (

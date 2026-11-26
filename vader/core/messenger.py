@@ -31,7 +31,7 @@ import time
 import uuid
 from contextlib import contextmanager
 
-from vader.core import account, config, messenger_image, secrets
+from vader.core import account, config, messenger_image, messenger_rooms, secrets
 
 API = "/api/messenger/"
 STORE_KEY = "messenger.store_key"
@@ -67,14 +67,29 @@ CREATE TABLE IF NOT EXISTS group_members (account TEXT PRIMARY KEY, gid TEXT NOT
 CREATE TABLE IF NOT EXISTS images (id TEXT PRIMARY KEY, data BLOB, state TEXT NOT NULL, w INTEGER, h INTEGER);
 CREATE TABLE IF NOT EXISTS image_pending (message TEXT PRIMARY KEY, attachment TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS image_ack (attachment TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS rooms (id TEXT PRIMARY KEY, name BLOB, owner TEXT, generation INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL, invited_by TEXT, invited_handle TEXT, joined INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS room_members (room TEXT NOT NULL, account TEXT NOT NULL, handle TEXT, state TEXT NOT NULL,
+  read_seq INTEGER, device TEXT, features TEXT, PRIMARY KEY (room, account));
+CREATE TABLE IF NOT EXISTS room_outbox (client_id TEXT PRIMARY KEY, sender TEXT NOT NULL, room TEXT NOT NULL,
+  generation INTEGER NOT NULL, copies TEXT NOT NULL, attachment TEXT, created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS room_seen (room TEXT PRIMARY KEY, seq INTEGER NOT NULL);
 """
 #: 앞선 판의 표에 더한 열 (사진, 2026-11-25) — CREATE TABLE IF NOT EXISTS 는 있는 표에 열을 더하지 않는다
-_COLUMNS = (("outbox", "attachment", "TEXT"), ("peers", "features", "TEXT"))
-FEATURES = ["image1"]                # 이 앱이 받을 수 있다고 서버에 알리는 형식
+_COLUMNS = (("outbox", "attachment", "TEXT"), ("peers", "features", "TEXT"),
+            # 그룹 채팅방 (2026-11-26) — 방 글은 room 이 있다. 1:1 질의는 room IS NULL 로만
+            ("messages", "room", "TEXT"), ("messages", "server_at", "REAL"), ("messages", "room_seq", "INTEGER"),
+            ("messages", "recipients", "TEXT"), ("messages", "missed", "TEXT"),
+            ("image_pending", "room", "TEXT"), ("image_ack", "room", "TEXT"))
+FEATURES = ["image1", "room1"]       # 이 앱이 받을 수 있다고 서버에 알리는 형식 — room1: 방 글
 
 
 class MessengerError(RuntimeError):
     pass
+
+
+class NotInRoom(MessengerError):
+    """이 PC 의 방 목록에서 나갔거나 내보내졌다 — 다시 시도해도 같다 (연결 실패와 구분, 방 impl 회신 3)."""
 
 
 class Stopped(MessengerError):
@@ -406,9 +421,9 @@ def _remember(con, listed: list[dict]) -> None:
 def _list(con) -> list[dict]:
     out = []
     for p in con.execute("""SELECT p.*, (SELECT max(at) FROM messages m WHERE m.peer=p.account AND m.outgoing=0
-            AND m.state='received') AS last, (SELECT at FROM seen s WHERE s.account=p.account) AS seen,
+            AND m.state='received' AND m.room IS NULL) AS last, (SELECT at FROM seen s WHERE s.account=p.account) AS seen,
             (SELECT gid FROM group_members g WHERE g.account=p.account) AS grp FROM peers p
-            WHERE p.state<>'ended' OR EXISTS (SELECT 1 FROM messages m WHERE m.peer=p.account)
+            WHERE p.state<>'ended' OR EXISTS (SELECT 1 FROM messages m WHERE m.peer=p.account AND m.room IS NULL)
             ORDER BY p.handle""").fetchall():   # 끝난 친구도 기록이 있으면 '지난 대화' 로 (codex1 3d P2-5)
         out.append({"account_id": p["account"], "handle": p["handle"], "state": p["state"], "mine": bool(p["mine"]),
                     "ready": bool(p["ed"]), "verified": bool(p["ed"]) and p["verified_ed"] == p["ed"],
@@ -511,7 +526,7 @@ def _keywords(con, peer: str, top: int = 3) -> list[str]:
     """사람이 주고받은 글에서만 — 할 일 공유 알림(앱끼리의 데이터)은 빼고, 번호 같은 토막도 뺀다 (마스터 2026-11-19)."""
     from vader.core.todo import SHARE_MARK
     count: dict[str, int] = {}
-    for r in con.execute("SELECT text FROM messages WHERE peer=? AND text IS NOT NULL ORDER BY at DESC LIMIT 300", (peer,)):
+    for r in con.execute("SELECT text FROM messages WHERE peer=? AND room IS NULL AND text IS NOT NULL ORDER BY at DESC LIMIT 300", (peer,)):
         text = _unseal(r["text"])
         if text.startswith(SHARE_MARK) or text.startswith(messenger_image.MARK):
             continue
@@ -588,7 +603,7 @@ def _queue(con, me, row, p, text: str, attachment: str | None = None, image: tup
                     (session.session_id, p["device"], session.pickle(_key()), now))
         con.execute("INSERT INTO outbox(client_id, sender, peer, device, generation, kind, body, created, attachment) VALUES (?,?,?,?,?,?,?,?,?)",
                     (client_id, row["device"], p["account"], p["device"], p["generation"], kind, base64.b64encode(body).decode(), now, attachment))
-        con.execute("INSERT INTO messages VALUES (?,?,1,?,?,'queued',?,1)",
+        con.execute("INSERT INTO messages(id, peer, outgoing, text, at, state, device, trusted) VALUES (?,?,1,?,?,'queued',?,1)",
                     (client_id, p["account"], _seal(text), now, p["device"]))
         if image is not None:
             jpeg, w, h = image
@@ -673,13 +688,14 @@ def _fetch_images(con) -> int:
     """받은 사진 글마다 암호문을 받아 확인·다시 만들기 → 저장 → 서버에서 지우기. 연결 문제는 다음 받기 때 다시.
     상태가 정해진 사진 수 — 화면이 기다리던 말풍선을 다시 그린다 (codex1 사진 회신 2 P2-5)."""
     settled = 0
-    for r in con.execute("SELECT message, attachment FROM image_pending").fetchall():
+    for r in con.execute("SELECT message, attachment, room FROM image_pending").fetchall():
+        fetch = "room_attachment" if r["room"] else "attachment"
         msg = con.execute("SELECT text FROM messages WHERE id=?", (r["message"],)).fetchone()
         meta = messenger_image.parse(_unseal(msg["text"])) if msg and msg["text"] is not None else None
         state, data, size = "broken", None, (None, None)
         if meta is not None:
             try:
-                got = _api("POST", "attachment", {"id": r["attachment"]},
+                got = _api("POST", fetch, {"id": r["attachment"]},
                            limit=(messenger_image.CIPHER_MAX * 4) // 3 + 1024)   # 읽는 동안 상한
             except account.AccountError as exc:
                 if exc.status in (403, 404, 409, 410):
@@ -705,15 +721,17 @@ def _fetch_images(con) -> int:
                         (r["message"], data, state, *size))
             con.execute("DELETE FROM image_pending WHERE message=?", (r["message"],))
             if state != "expired":
-                con.execute("INSERT OR IGNORE INTO image_ack(attachment) VALUES (?)", (r["attachment"],))
+                con.execute("INSERT OR IGNORE INTO image_ack(attachment, room) VALUES (?,?)", (r["attachment"], r["room"]))
         settled += 1
-    ids = [r["attachment"] for r in con.execute("SELECT attachment FROM image_ack LIMIT 100").fetchall()]
-    if ids:
-        try:
-            _api("POST", "attachment_ack", {"ids": ids})  # 저장한 뒤에만 — 실패하면 다음 받기 때 다시
-            con.execute(f"DELETE FROM image_ack WHERE attachment IN ({','.join('?' * len(ids))})", ids)
-        except account.AccountError:
-            pass                                          # ack 대기는 남기고, 이미 정한 사진 상태는 화면에 알린다 (회신 3 P2-2)
+    for room, action in ((False, "attachment_ack"), (True, "room_attachment_ack")):   # 1:1·방 사진 ack 는 따로 (방 회신 1 P1-3)
+        ids = [r["attachment"] for r in con.execute(
+            f"SELECT attachment FROM image_ack WHERE room IS {'NOT ' if room else ''}NULL LIMIT 100").fetchall()]
+        if ids:
+            try:
+                _api("POST", action, {"ids": ids})        # 저장한 뒤에만 — 실패하면 다음 받기 때 다시
+                con.execute(f"DELETE FROM image_ack WHERE attachment IN ({','.join('?' * len(ids))})", ids)
+            except account.AccountError:
+                pass                                      # ack 대기는 남기고, 이미 정한 사진 상태는 화면에 알린다 (회신 3 P2-2)
     return settled
 
 
@@ -722,10 +740,12 @@ def _latest(con, device: str):
     return _vz().Session.from_pickle(row["pickle"], _key()) if row else None
 
 
-def _open_session(me, p):
-    """상대 기기의 일회용 키 하나로 첫 세션을 연다. 서버가 준 키가 붙잡아 둔 신원키로 서명됐는지 확인한다."""
+def _open_session(me, p, room: str | None = None):
+    """상대 기기의 일회용 키 하나로 첫 세션을 연다. 서버가 준 키가 붙잡아 둔 신원키로 서명됐는지 확인한다.
+    room 이면 방 안에서만 받는 키 (친구가 아니어도, 방 회신 1 P1-1)."""
     vz = _vz()
-    got = _api("POST", "claim", {"account_id": p["account"], "device_id": p["device"]})
+    got = (_api("POST", "room_claim", {"room": room, "account_id": p["account"], "device_id": p["device"]}) if room
+           else _api("POST", "claim", {"account_id": p["account"], "device_id": p["device"]}))
     if (got["device_id"], got["identity_ed"], got["identity_curve"]) != (p["device"], p["ed"], p["curve"]):
         raise MessengerError("상대의 키가 바뀌었습니다. 친구 목록을 새로 받고 안전 번호를 다시 확인해 주세요.")
     k = got["key"]
@@ -769,6 +789,7 @@ def sync() -> dict:
         if me is None or not row["registered"]:
             return {"received": 0}
         _flush(con, row["device"])
+        messenger_rooms.flush(con, row["device"])
         got, refreshed, used_keys = 0, False, False
         while True:
             messages = _api("GET", "inbox")["messages"]
@@ -779,6 +800,7 @@ def sync() -> dict:
                 known = _sender(con, m)
                 if known is None and not refreshed:
                     _remember(con, _api("GET", "friends")["friends"])    # 새 친구·기기 — 한 번만 새로 받는다
+                    messenger_rooms.store(con, _api("GET", "rooms")["rooms"])   # 방에서만 아는 멤버 기기도
                     refreshed = True
                     known = _sender(con, m)
                 used_keys |= m["kind"] == 0
@@ -796,14 +818,25 @@ def sync() -> dict:
         return {"received": got, **({"images": images} if images else {}), **({"shares_waiting": waiting} if waiting else {})}
 
 
+def _room_recipients(con, mid: str) -> list | None:
+    """내 방 글을 받은 계정들. 아직 서버 답을 기다리는 중(queued — 결과 묻기 재시도 포함)이면 None: 판정을 미룬다 (방 impl 회신 8)."""
+    r = con.execute("SELECT state, recipients FROM messages WHERE id=? AND outgoing=1", (mid,)).fetchone()
+    if r is not None and r["state"] == "queued":
+        return None
+    return json.loads(r["recipients"] or "[]") if r is not None else []
+
+
 def _apply_shares(con) -> int:
     """적용 대기 중인 할 일 공유를 적용한다. 성공(또는 우리 글이 아님·친구 아님)만 지우고, 실패는 남겨 다음 받기 때 다시. 남은 수."""
     from vader.core import todo
     for r in con.execute("SELECT message, account FROM share_pending").fetchall():
-        msg = con.execute("SELECT text FROM messages WHERE id=?", (r["message"],)).fetchone()
+        msg = con.execute("SELECT text, room FROM messages WHERE id=?", (r["message"],)).fetchone()
         p = con.execute("SELECT state FROM peers WHERE account=?", (r["account"],)).fetchone()
         try:
-            if msg and msg["text"] is not None and p and p["state"] == "accepted":
+            if msg and msg["text"] is not None and msg["room"]:
+                todo.receive_room_share(msg["room"], r["account"], _unseal(msg["text"]), r["message"],
+                                        recipients_of=lambda mid: _room_recipients(con, mid))
+            elif msg and msg["text"] is not None and p and p["state"] == "accepted":
                 todo.receive_share(r["account"], _unseal(msg["text"]), r["message"])
         except Exception:   # noqa: BLE001 — 할 일 저장소 오류 등: 남겨 두고 다음에
             continue
@@ -826,8 +859,9 @@ def _receive(con, me, known, m) -> int:
     found = _decrypt(con, me, known, m) if known is not None else None
     with _tx(con):
         if found is None:      # 모르는 기기이거나 풀 수 없다 — 지우지 않고 '읽을 수 없음' 으로 남긴다
-            con.execute("INSERT INTO messages VALUES (?,?,0,NULL,?,'unreadable',?,0)",
-                        (m["id"], m["sender_account"], at, m["sender_device"]))
+            con.execute("INSERT INTO messages(id, peer, outgoing, text, at, state, device, trusted, room, room_seq) "
+                        "VALUES (?,?,0,NULL,?,'unreadable',?,0,?,?)",
+                        (m["id"], m["sender_account"], at, m["sender_device"], m.get("room"), m.get("room_seq")))
             return 0
         session, raw, account_changed = found
         # 암호는 풀렸으니 세션·계정 상태는 글자가 아니어도 저장한다 — 다음 메시지를 풀 수 있게 (codex1 3c NEW-P1-2)
@@ -839,15 +873,21 @@ def _receive(con, me, known, m) -> int:
             plain = raw.decode()
         except UnicodeDecodeError:
             plain = None
-        con.execute("INSERT INTO messages VALUES (?,?,0,?,?,?,?,?)",
+        room = m.get("room")
+        if room:      # 방 글 — 평문 앞의 방 번호가 서버가 준 방과 같아야 그 방 글 (서버가 다른 방으로 옮기지 못하게)
+            plain = messenger_rooms.unwrap(room, plain)
+        con.execute("INSERT INTO messages(id, peer, outgoing, text, at, state, device, trusted, room, server_at, room_seq) "
+                    "VALUES (?,?,0,?,?,?,?,?,?,?,?)",
                     (m["id"], known["account"], _seal(plain) if plain is not None else None, at,
-                     "received" if plain is not None else "unreadable", known["device"], int(known["verified"])))
+                     "received" if plain is not None else "unreadable", known["device"], int(known["verified"]),
+                     room, messenger_rooms.server_time(m) if room else None, m.get("room_seq") if room else None))
         from vader.core.todo import SHARE_MARK
         picture = messenger_image.parse(plain) if plain is not None else None
-        if picture is not None and known["verified"]:
-            # 사진 — 글과 같은 거래에서 받기 대기로. 안전 번호를 확인한 상대의 사진만 받는다 (codex1 사진 회신)
-            con.execute("INSERT OR IGNORE INTO image_pending(message, attachment) VALUES (?,?)", (m["id"], picture["id"]))
-        if plain is not None and known["verified"] and plain.startswith(SHARE_MARK):
+        trusted = known["verified"] or room      # 방 멤버는 방 초대만으로 — 확인 안 된 표시는 화면이 (마스터 결정 4)
+        if picture is not None and trusted:
+            # 사진 — 글과 같은 거래에서 받기 대기로. 1:1 은 안전 번호를 확인한 상대의 사진만 받는다 (codex1 사진 회신)
+            con.execute("INSERT OR IGNORE INTO image_pending(message, attachment, room) VALUES (?,?,?)", (m["id"], picture["id"], room))
+        if plain is not None and trusted and plain.startswith(SHARE_MARK):
             # 할 일 공유 글 — 메시지와 같은 트랜잭션에서 적용 대기로 (codex1 todo-share 회신 2: 저장과 대기 사이에 죽어도 안 잃는다)
             con.execute("INSERT OR IGNORE INTO share_pending(message, account) VALUES (?,?)", (m["id"], known["account"]))
     return int(plain is not None)
@@ -883,7 +923,7 @@ def _decrypt(con, me, known, m):
 
 def history(account_id: str, limit: int = 200) -> list[dict]:
     with _one() as con:
-        rows = con.execute(_MESSAGE_ROW + " WHERE m.peer=? ORDER BY m.at DESC LIMIT ?",
+        rows = con.execute(_MESSAGE_ROW + " WHERE m.peer=? AND m.room IS NULL ORDER BY m.at DESC LIMIT ?",
                            (account_id, max(1, min(int(limit), 500)))).fetchall()
         return [_message(r) for r in reversed(rows)]
 

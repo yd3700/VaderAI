@@ -7,7 +7,8 @@
 const box=$('#messenger'),stream=$('#msgStream'),form=$('#msgForm'),input=$('#msgInput'),send=$('#msgSend'),title=$('#msgTitle'),line=$('#msgState'),
  back=$('#msgBack'),avatar=$('#msgAvatar'),more=$('#msgMore'),toggle=$('#msgToggle'),badge=$('#msgBadge');
 const docked=matchMedia('(min-width:1180px)');
-const ms={state:null,handle:null,error:null,friends:[],groups:[],renaming:null,groupsOpen:false,peer:null,history:[],safety:null,found:null,busy:false,armed:null,epoch:0};
+const ms={state:null,handle:null,error:null,friends:[],groups:[],renaming:null,groupsOpen:false,peer:null,history:[],safety:null,found:null,busy:false,armed:null,epoch:0,
+ rooms:[],room:null,making:false,pick:new Set(),membersOpen:false};   // 그룹 채팅방 (2026-11-26) — room 이 있으면 방 대화
 const drafts={};
 let timer=0,delay=5000,ticks=0,lastPublished='',running=null;
 $('#msgClose').innerHTML=icon('close');back.innerHTML=icon('back');send.insertAdjacentHTML('afterbegin',icon('send'));
@@ -28,9 +29,10 @@ const live=f=>f.state==='accepted'||f.state==='pending';
 
 // 메인 그래프에 알린다 — 친구·상태가 바뀔 때만 다시 그린다. render() 는 포커스를 id 로 되돌린다.
 function publish(){
- const fs=ms.friends.filter(live).map(f=>({...f,unread:unread(f)})),n=fs.filter(f=>f.unread||f.state==='pending'&&!f.mine).length;
+ const fs=ms.friends.filter(live).map(f=>({...f,unread:unread(f)})),n=fs.filter(f=>f.unread||f.state==='pending'&&!f.mine).length+ms.rooms.filter(r=>r.unread||r.state==='invited').length;
+ state.msgRooms=ms.rooms.filter(r=>r.state==='joined');
  badge.hidden=!n;badge.textContent=n?String(n):'';toggle.setAttribute('aria-label',n?'메신저 · 확인할 것 '+n+'개':'메신저');
- const next=JSON.stringify([ms.state==='ready',fs,ms.groups]);if(next===lastPublished)return;lastPublished=next;
+ const next=JSON.stringify([ms.state==='ready',fs,ms.groups,state.msgRooms]);if(next===lastPublished)return;lastPublished=next;
  state.friends=fs;state.msgGroups=ms.groups;state.msgReady=ms.state==='ready';
  if(state.page==='core'&&!document.activeElement?.closest?.('.orbit,.execution-options'))render();
 }
@@ -42,10 +44,17 @@ function open(show,focus=true){
  else if(focus)toggle.focus();
  publish();
 }
-const focusHere=()=>(ms.peer?(input.disabled?stream:input):($('#msgFind')||stream)).focus();
-function leave(){if(ms.shots?.length)dropShots();photoCache.clear();if(ms.peer)drafts[ms.peer]=input.value;ms.epoch++;ms.history=[];ms.safety=null;ms.armed=null;}
+const focusHere=()=>(ms.peer||ms.room?(input.disabled?stream:input):($('#msgFind')||stream)).focus();
+const draftKey=()=>ms.room?'room:'+ms.room:ms.peer;
+function leave(){if(ms.shots?.length)dropShots();photoCache.clear();if(draftKey())drafts[draftKey()]=input.value;ms.epoch++;ms.history=[];ms.safety=null;ms.armed=null;}
+const roomOf=id=>ms.rooms.find(r=>r.id===id);
+async function showRoom(id){
+ leave();ms.peer=null;ms.room=id;input.value=drafts['room:'+id]||'';
+ const ep=ms.epoch;open(true,false);await refreshTalk(ep);
+ if(ep===ms.epoch&&!box.hidden)focusHere();
+}
 async function show(id){
- leave();ms.peer=id||null;input.value=id&&drafts[id]||'';
+ leave();ms.room=null;ms.peer=id||null;input.value=id&&drafts[id]||'';
  const ep=ms.epoch;open(true,false);
  if(id)await refreshTalk(ep);
  if(ep===ms.epoch&&!box.hidden)focusHere();
@@ -55,6 +64,11 @@ function status(text,bad=false,ready=false){line.textContent=ready?text:VaderI18
 
 // 대화 다시 읽기 — 이 epoch 의 상대일 때만 화면에 쓴다.
 async function refreshTalk(ep){
+ if(ms.room){const room=ms.room;
+  try{const h=await api('messenger_room_history',{room});if(ep!==ms.epoch)return;ms.history=h;draw();
+   if(!box.hidden&&!document.hidden&&h.some(m=>!m.outgoing))api('messenger_room_read',{room}).then(moved=>{if(moved)loadRooms();}).catch(()=>{});}
+  catch(e){if(ep===ms.epoch)status(e.message,true);}
+  return;}
  const peer=ms.peer;if(!peer)return;
  try{
   const h=await api('messenger_history',{account_id:peer});if(ep!==ms.epoch)return;
@@ -68,17 +82,18 @@ async function refreshTalk(ep){
 const el=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e;};
 function btn(text,m,cls='button ghost',data={}){const b=el('button',cls,text);b.type='button';b.dataset.m=m;Object.assign(b.dataset,data);return b;}
 function draw(){
- const f=ms.peer&&friend(ms.peer),view=ms.peer||'list',same=stream.dataset.view===view;
+ const f=ms.peer&&friend(ms.peer),r=ms.room&&roomOf(ms.room),view=ms.room?'room:'+ms.room:ms.peer||'list',same=stream.dataset.view===view;
  const find=$('#msgFind'),findValue=find?.value,findFocus=document.activeElement===find;
  const top=stream.scrollTop,atEnd=stream.scrollHeight-top-stream.clientHeight<48;
- back.hidden=!ms.peer;more.hidden=!(f&&f.state==='accepted');
- title.textContent=f?'@'+f.handle:ms.peer?'대화':'메신저';
+ back.hidden=!(ms.peer||ms.room);more.hidden=!(f&&f.state==='accepted');
+ title.textContent=r?r.name:f?'@'+f.handle:ms.peer||ms.room?'대화':'메신저';
+ if(r)title.dataset.raw='';else delete title.dataset.raw;
  avatar.innerHTML=f?'':icon('people');if(f)avatar.textContent=(f.handle||'?')[0].toUpperCase();
  avatar.classList.toggle('verified',!!f?.verified);
  stream.textContent='';stream.dataset.view=view;
- if(ms.peer)drawTalk(f);else drawList();
+ if(ms.room)drawRoom(r);else if(ms.peer)drawTalk(f);else drawList();
  const again=$('#msgFind');if(again&&findValue!=null){again.value=findValue;if(findFocus)again.focus();}
- stream.scrollTop=ms.peer?(!same||atEnd?stream.scrollHeight:top):(same?top:0);
+ stream.scrollTop=ms.peer||ms.room?(!same||atEnd?stream.scrollHeight:top):(same?top:0);
  syncCompose();
 }
 // 친구 줄 오른쪽의 그룹 고르기 (마스터 2026-11-19) — 목록에서 바로 넣고 뺀다. 바꾸면 바로 저장.
@@ -103,6 +118,7 @@ function drawList(){
    r.append(known&&live(known)?el('span','muted small',known.state==='accepted'?'이미 친구예요':'요청이 있어요'):btn('친구 요청','request','button primary',{id:ms.found.account_id}));}
   else r.append(el('span','muted','찾지 못했어요. 아이디를 정확히 입력했는지 확인해 주세요.'));
   stream.append(r);}
+ stream.append(roomSection());
  // 멤버 그룹 (2026-11-18) — 친구는 자기 그룹 밑에, 그룹 없는 친구는 '친구' 밑에. 그룹은 이 PC 에만 있다.
  const named=new Set(ms.groups.map(g=>g.id)),inGroup=g=>f=>f.state==='accepted'&&f.group===g.id;
  const groups=[['받은 요청',f=>f.state==='pending'&&!f.mine],...ms.groups.map(g=>[g.name,inGroup(g),true]),
@@ -145,6 +161,70 @@ function groupManager(){
    box.append(acts);dd.append(box);li.append(dd);
    ul.append(li);});
   d.append(ul);}
+ return d;
+}
+// ── 그룹 채팅방 (2026-11-26) — 방 초대만으로 대화. 확인 안 된 멤버는 경고만, 방 이름은 이 PC 에만 ──
+function roomSection(){
+ const wrap=el('section','msg-rooms'),head=el('div','msg-rooms-head');
+ head.append(el('h3','msg-group','방'),btn(ms.making?'닫기':'방 만들기','roomNew','text-button'));wrap.append(head);
+ if(ms.making)wrap.append(roomForm());
+ const rs=ms.rooms.filter(r=>r.state!=='ended'||r.last);
+ if(!rs.length&&!ms.making){wrap.append(el('p','chat-note','친구 여럿과 함께 이야기하려면 방을 만들어요.'));return wrap;}
+ const ul=el('ul','msg-list');
+ rs.forEach(r=>{const li=el('li','msg-row');
+  if(r.state==='invited'){const who=el('span','msg-handle',VaderI18n.t('@{0} 님의 방 초대',r.invited_by_handle||''));who.dataset.raw='';
+   li.append(who,el('small','muted',VaderI18n.t('{0}명',r.joined)),btn('수락','roomAccept','button primary',{room:r.id}),btn('거절','roomDecline','button ghost',{room:r.id}));ul.append(li);return;}
+  const b=btn('','roomOpen','msg-person',{room:r.id}),name=el('span','msg-handle',r.name);name.dataset.raw='';
+  b.append(el('span','friend-orb room-orb',String(r.members.filter(x=>x.state==='joined').length)),name);
+  const t=r.state==='ended'?'나온 방 · 기록만 볼 수 있어요':r.unread?VaderI18n.t('새 메시지 {0}',r.unread):'';
+  if(t)b.append(el('small',r.unread?'new':'muted',t));li.append(b);ul.append(li);});
+ wrap.append(ul);return wrap;
+}
+function roomForm(){
+ const f=el('form','msg-room-new'),fs=ms.friends.filter(x=>x.state==='accepted');
+ f.append(el('p','chat-note','초대할 친구를 고르세요. 방에 들어온 멤버끼리는 친구가 아니어도 이야기할 수 있어요.'));
+ if(!fs.length){f.append(el('p','muted small','먼저 친구를 추가해 주세요.'));return f;}
+ const ul=el('ul','msg-room-pick');
+ fs.forEach(x=>{const li=el('li'),l=el('label'),c=document.createElement('input');c.type='checkbox';c.value=x.account_id;c.checked=ms.pick.has(x.account_id);
+  c.onchange=()=>{c.checked?ms.pick.add(x.account_id):ms.pick.delete(x.account_id);const go=$('[data-m="roomCreate"]',f);if(go)go.disabled=!ms.pick.size;};
+  l.append(c,el('span','msg-handle','@'+(x.handle||'')));li.append(l);ul.append(li);});
+ f.append(ul);
+ const n=el('div','chat-box');n.innerHTML='<label class="sr-only" for="roomName">방 이름</label><input id="roomName" maxlength="30" autocomplete="off" placeholder="방 이름 (이 PC 에만 보여요 · 비우면 멤버 이름)">';
+ const go=btn('방 만들기','roomCreate','button primary');go.disabled=!ms.pick.size;n.append(go);f.append(n);
+ f.onsubmit=e=>{e.preventDefault();go.click();};
+ return f;
+}
+function drawRoom(r){
+ stream.setAttribute('role','log');form.hidden=false;
+ if(!r){stream.append(el('p','chat-note','이 방은 더 이상 열 수 없어요.'));status('');return;}
+ const joined=r.members.filter(x=>x.state==='joined'),unchecked=joined.filter(x=>!x.me&&!x.verified),old=joined.filter(x=>!x.me&&!x.ready);
+ status(r.state!=='joined'?VaderI18n.word('나온 방이에요 · 기록만 볼 수 있어요'):VaderI18n.t('{0}명',joined.length)+(unchecked.length?' · '+VaderI18n.t('안전 번호 확인 안 된 멤버 {0}',unchecked.length):''),!!unchecked.length,true);
+ if(r.state==='joined')stream.append(roomPanel(r));
+ if(r.state==='joined'&&unchecked.length){const w=el('p','msg-room-warn','안전 번호를 확인하지 않은 멤버가 있어요. 방 초대만으로 대화하므로 민감한 내용은 확인한 뒤에 보내세요.');stream.append(w);}
+ if(r.state==='joined'&&old.length)stream.append(el('p','chat-note',VaderI18n.t('{0}명은 앱을 업데이트해야 이 방 글을 받아요',old.length)));
+ if(!ms.history.length)stream.append(el('p','chat-note msg-empty','아직 주고받은 메시지가 없어요.'));
+ ms.history.forEach(m=>stream.append(bubble(m,true)));
+}
+function roomPanel(r){
+ const d=el('details','msg-room-panel');d.open=ms.membersOpen;d.ontoggle=()=>{ms.membersOpen=d.open;};
+ const joined=r.members.filter(x=>x.state==='joined');
+ d.append(el('summary',null,VaderI18n.t('멤버 {0} · 방 설정',joined.length)));
+ const ul=el('ul','msg-members');
+ r.members.forEach(x=>{const li=el('li');li.append(el('span','friend-orb',(x.handle||'?')[0].toUpperCase()),el('span','msg-handle','@'+(x.handle||'알 수 없음')));
+  const tags=[x.me?'나':'',x.account_id===r.owner?'방장':'',x.state==='invited'?'초대 중':!x.me&&!x.verified?'확인 안 됨':''].filter(Boolean);
+  if(tags.length)li.append(el('small',tags.includes('확인 안 됨')?'warn':'muted',tags.map(t=>VaderI18n.word(t)).join(' · ')));
+  if(r.mine&&!x.me)li.append(btn('내보내기','roomKick','text-button',{room:r.id,id:x.account_id}));
+  ul.append(li);});
+ d.append(ul);
+ const rn=el('form','msg-room-rename');
+ rn.innerHTML='<label class="sr-only" for="roomRename">방 이름</label><div class="chat-box"><input id="roomRename" maxlength="30" autocomplete="off" placeholder="방 이름"><button class="button ghost" type="submit">이름 저장</button></div><p class="chat-note">이름은 이 PC 에만 보여요. 메신저를 다른 PC 로 옮기면 멤버 이름으로 돌아가요.</p>';
+ queueMicrotask(()=>{const i=$('#roomRename');if(i&&!i.value&&r.named)i.value=r.name;});
+ rn.onsubmit=async e=>{e.preventDefault();try{ms.rooms=await call('messenger_room_rename',{room:r.id,name:$('#roomRename').value});publish();draw();status('방 이름을 바꿨어요');}catch(e){}};
+ d.append(rn);
+ if(r.mine){const out=ms.friends.filter(f=>f.state==='accepted'&&!r.members.some(x=>x.account_id===f.account_id));
+  if(out.length){const inv=el('div','chat-box msg-room-invite'),sel=el('select','select');sel.id='roomInvitePick';sel.setAttribute('aria-label','초대할 친구');
+   out.forEach(f=>sel.append(new Option('@'+(f.handle||''),f.account_id)));inv.append(sel,btn('초대','roomInvite','button ghost',{room:r.id}));d.append(inv);}}
+ d.append(btn('방 나가기','roomLeave','text-button danger',{room:r.id}));
  return d;
 }
 function row(f){
@@ -218,12 +298,12 @@ function viewPhoto(src,alt){
 const shots=$('#msgShots'),photoBtn=$('#msgPhoto'),fileIn=$('#msgFile');
 ms.shots=[];
 const PHOTO_MAX=20*1024*1024,SHOTS_MAX=10;
-function canPhoto(){const f=ms.peer&&friend(ms.peer);return !!f&&f.state==='accepted'&&f.verified&&!ms.busy;}
+function canPhoto(){if(ms.room)return roomOf(ms.room)?.state==='joined'&&!ms.busy;const f=ms.peer&&friend(ms.peer);return !!f&&f.state==='accepted'&&f.verified&&!ms.busy;}
 async function addPhotos(files){
  const f=ms.peer&&friend(ms.peer);
- if(!canPhoto())return status(!f||f.state!=='accepted'?'친구에게만 보낼 수 있어요':'안전 번호를 확인한 뒤에 보낼 수 있어요',true);
- if(!f.images)return status('상대가 아직 사진을 받을 수 없는 버전이에요. 상대가 앱을 업데이트하면 보낼 수 있어요.',true);
- const peer=ms.peer;
+ if(!canPhoto())return status(ms.room?'들어가 있는 방에만 보낼 수 있어요':!f||f.state!=='accepted'?'친구에게만 보낼 수 있어요':'안전 번호를 확인한 뒤에 보낼 수 있어요',true);
+ if(!ms.room&&!f.images)return status('상대가 아직 사진을 받을 수 없는 버전이에요. 상대가 앱을 업데이트하면 보낼 수 있어요.',true);
+ const peer=draftKey();
  for(const file of [...files]){
   if(ms.shots.length>=SHOTS_MAX){status(VaderI18n.t('사진은 한 번에 {0}장까지 보낼 수 있어요',SHOTS_MAX),true);break;}
   if(!['image/jpeg','image/png'].includes(file.type)){status('JPG·PNG 사진만 보낼 수 있어요.',true);continue;}
@@ -231,7 +311,7 @@ async function addPhotos(files){
   try{
    const data=await new Promise((ok,bad)=>{const r=new FileReader();r.onload=()=>ok(String(r.result).split(',',2)[1]||'');r.onerror=()=>bad(new Error('사진을 읽지 못했어요.'));r.readAsDataURL(file);});
    const p=await api('messenger_prepare_image',{data});
-   if(ms.peer!==peer){api('messenger_drop_image',{token:p.token}).catch(()=>{});return;}
+   if(draftKey()!==peer){api('messenger_drop_image',{token:p.token}).catch(()=>{});return;}
    ms.shots.push(p);drawShots();
   }catch(e){status(e.message,true);}
  }
@@ -242,15 +322,17 @@ function drawShots(){
  const row=el('div','msg-shot-row');
  ms.shots.forEach((s,i)=>{const t=el('div','msg-shot');const img=document.createElement('img');img.src=s.preview;img.alt=VaderI18n.t('보낼 사진 {0}',i+1);
   const x=btn('×','shotRemove','msg-shot-x',{i:String(i)});x.setAttribute('aria-label',VaderI18n.t('사진 {0} 빼기',i+1));t.append(img,x);row.append(t);});
- const f=friend(ms.peer);
+ const f=friend(ms.peer),r=ms.room&&roomOf(ms.room);
+ const label=r?VaderI18n.t('{0} 에 사진 {1}장 보내기',r.name,ms.shots.length):VaderI18n.t('@{0} 님에게 사진 {1}장 보내기',f?.handle||'',ms.shots.length);
  shots.append(row,el('p','msg-shot-warn','사진 속 환자 이름·등록번호·얼굴은 가려지지 않아요. 기관에서 허용한 자료만 보내세요.'),
-  (()=>{const a=el('div','msg-shot-acts');a.append(btn(VaderI18n.t('@{0} 님에게 사진 {1}장 보내기',f?.handle||'',ms.shots.length),'shotSend','button primary'),btn('취소','shotCancel','button ghost'));return a;})());
+  (()=>{const a=el('div','msg-shot-acts'),go=btn(label,'shotSend','button primary');if(r)go.dataset.raw='';a.append(go,btn('취소','shotCancel','button ghost'));return a;})());
 }
 async function sendShots(){
- const peer=ms.peer,ep=ms.epoch;if(!peer||ms.busy||!ms.shots.length)return;
+ const peer=ms.peer,room=ms.room,ep=ms.epoch;if(!(peer||room)||ms.busy||!ms.shots.length)return;
  ms.busy=true;syncCompose();
  // 응답을 기다리는 사이 다른 대화로 갔으면 그 결과를 지금 대화에 넣지 않는다 (codex1 사진 회신 2 P1-3)
- try{while(ms.shots.length&&ep===ms.epoch){const s=ms.shots[0];const m=await api('messenger_send_image',{account_id:peer,token:s.token});
+ try{while(ms.shots.length&&ep===ms.epoch){const s=ms.shots[0];
+   const m=await api(room?'messenger_room_send_image':'messenger_send_image',room?{room,token:s.token}:{account_id:peer,token:s.token});
    ms.shots=ms.shots.filter(x=>x.token!==s.token);if(ep!==ms.epoch)break;merge(m);drawShots();draw();}}
  catch(e){if(ep===ms.epoch)status(e.message,true);}
  finally{ms.busy=false;syncCompose();drawShots();}
@@ -260,9 +342,9 @@ photoBtn.onclick=()=>{if(canPhoto())fileIn.click();else addPhotos([]);};
 fileIn.onchange=()=>{const files=[...fileIn.files];fileIn.value='';addPhotos(files);};
 // 끌어다 놓기는 대화창 안에서만 — 룬 실행용 드롭(메인)과 섞이지 않게 여기서 멈춘다
 const hasFiles=e=>[...(e.dataTransfer?.types||[])].includes('Files');
-box.addEventListener('dragover',e=>{if(!ms.peer||!hasFiles(e))return;e.preventDefault();e.stopPropagation();box.classList.add('dropping');});
+box.addEventListener('dragover',e=>{if(!(ms.peer||ms.room)||!hasFiles(e))return;e.preventDefault();e.stopPropagation();box.classList.add('dropping');});
 box.addEventListener('dragleave',e=>{if(!box.contains(e.relatedTarget))box.classList.remove('dropping');});
-box.addEventListener('drop',e=>{box.classList.remove('dropping');if(!ms.peer||!hasFiles(e))return;e.preventDefault();e.stopPropagation();addPhotos(e.dataTransfer.files);});
+box.addEventListener('drop',e=>{box.classList.remove('dropping');if(!(ms.peer||ms.room)||!hasFiles(e))return;e.preventDefault();e.stopPropagation();addPhotos(e.dataTransfer.files);});
 input.addEventListener('paste',e=>{const files=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith('image/'));if(files.length){e.preventDefault();addPhotos(files);}});
 // 할 일 공유 글(코어 todo.SHARE_MARK)은 말풍선에 '할 일' 로 — 글자 그대로 보이지 않게.
 const SHARE='\u2063vader-todo:';
@@ -272,18 +354,28 @@ function shareText(m){
   return s.op==='share'?VaderI18n.t(m.outgoing?'할 일을 공유했어요 ·':'할 일을 공유받았어요 ·')+' '+s.title:VaderI18n.t(s.undo?'공유한 할 일을 다시 열었어요':'공유한 할 일을 끝냈어요');}
  catch{return '할 일 공유';}
 }
-function bubble(m){
+function roomMeta(m){
+ if(!m.outgoing)return m.state==='received'&&!m.trusted?'확인 안 된 멤버':'';
+ return [m.unread?VaderI18n.t('안 읽음 {0}',m.unread):'',m.missed?VaderI18n.t('{0}명 못 받음',m.missed):''].filter(Boolean).join(' · ');
+}
+function bubble(m,room=false){
  const d=el('div','msg '+(m.outgoing?'me':'ai')+(m.state==='failed'?' failed':'')+(m.state==='unreadable'?' unreadable':''));
+ if(room&&!m.outgoing){const who=el('span','msg-from','@'+(m.handle||'알 수 없음'));d.append(who);}
  if(m.image){d.classList.add('msg-image');const body=el('div','msg-body');body.append(el('span','sr-only',m.outgoing?'나: ':'상대: '),photo(m));d.append(body);
-  const note=STATES[m.state]||(!m.outgoing&&!m.trusted?'안전 번호 확인 전에 받음':'');
+  const note=STATES[m.state]||(room?roomMeta(m):!m.outgoing&&!m.trusted?'안전 번호 확인 전에 받음':'');
   d.append(el('small','msg-meta',(note?VaderI18n.word(note)+' · ':'')+new Date(m.at*1000).toLocaleTimeString(VaderI18n.lang==='en'?'en-US':'ko-KR',{hour:'2-digit',minute:'2-digit'})));return d;}
  const body=el('div','msg-body');body.append(el('span','sr-only',m.outgoing?'나: ':'상대: '));
  const said=el('span');said.dataset.raw='';said.append(m.text==null?STATES.unreadable:shareText(m));body.append(m.text==null?STATES.unreadable:said);d.append(body);if(m.text?.startsWith(SHARE))d.classList.add('msg-todo');
- const note=STATES[m.state]&&m.text!=null?STATES[m.state]:!m.outgoing&&m.state==='received'&&!m.trusted?'안전 번호 확인 전에 받음':'';
+ const note=STATES[m.state]&&m.text!=null?STATES[m.state]:room?roomMeta(m):!m.outgoing&&m.state==='received'&&!m.trusted?'안전 번호 확인 전에 받음':'';
  d.append(el('small','msg-meta',(note?VaderI18n.word(note)+' · ':'')+new Date(m.at*1000).toLocaleTimeString(VaderI18n.lang==='en'?'en-US':'ko-KR',{hour:'2-digit',minute:'2-digit'})));
+ if(room&&m.outgoing&&m.state==='failed'&&m.text!=null)d.append(btn('다시 보내기','roomResend','text-button msg-resend',{id:m.id}));
  return d;
 }
+const NOTE_ONE='Enter 보내기 · Shift+Enter 줄바꿈 · 두 PC 사이에서만 풀리게 암호화돼요. 환자 정보는 보내지 마세요.',
+ NOTE_ROOM='Enter 보내기 · Shift+Enter 줄바꿈 · 방 멤버의 PC 에서만 풀리게 암호화돼요. 환자 정보는 보내지 마세요.';
 function syncCompose(){
+ const note=$('#msgNote');if(note)note.textContent=VaderI18n.word(ms.room?NOTE_ROOM:NOTE_ONE);
+ if(ms.room){const r=roomOf(ms.room),ok=r?.state==='joined'&&!ms.busy;input.disabled=!ok;send.disabled=!ok;photoBtn.disabled=!ok;input.placeholder=ok?'메시지':'';return;}
  const f=ms.peer&&friend(ms.peer),ok=!!f&&f.state==='accepted'&&f.verified&&!ms.busy;
  input.disabled=!ok;send.disabled=!ok;photoBtn.disabled=!ok;
  input.placeholder=!f||f.state!=='accepted'?'':!f.verified?'안전 번호 확인 후 보낼 수 있어요':'메시지';
@@ -296,11 +388,14 @@ async function call(method,args){try{return await api(method,args);}catch(e){sta
 async function loadFriends(list){
  const key=f=>f?[f.state,f.ready,f.verified,f.changed].join():'';
  const before=key(ms.peer&&friend(ms.peer));
- ms.friends=list||await api('messenger_friends');ms.groups=await api('messenger_groups').catch(()=>ms.groups);publish();
+ ms.friends=list||await api('messenger_friends');ms.groups=await api('messenger_groups').catch(()=>ms.groups);
+ ms.rooms=(await api('messenger_rooms').catch(()=>ms.rooms))||[];publish();
  if(box.hidden)return;
+ if(ms.room)return draw();
  if(!ms.peer)return draw();
  if(key(friend(ms.peer))!==before){ms.safety=null;await refreshTalk(ms.epoch);}
 }
+async function loadRooms(){try{ms.rooms=(await api('messenger_rooms'))||[];publish();if(!box.hidden&&!ms.peer)draw();}catch(e){}}
 async function findHandle(h){
  h=String(h).trim();if(!h)return;
  try{ms.found=await call('messenger_find',{handle:h});draw();($('[data-m="request"]',stream)||$('#msgFind')).focus();}catch(e){}
@@ -308,6 +403,21 @@ async function findHandle(h){
 async function act(b){
  const m=b.dataset.m,id=b.dataset.id||ms.peer;
  if(m==='open')return show(id);
+ if(m==='roomOpen')return showRoom(b.dataset.room);
+ if(m==='roomNew'){ms.making=!ms.making;ms.pick=new Set();draw();return;}
+ if(m==='roomCreate'){if(!ms.pick.size)return;
+  try{const got=await call('messenger_room_create',{account_ids:[...ms.pick],name:$('#roomName')?.value||''});ms.rooms=got.rooms;ms.making=false;ms.pick=new Set();publish();
+   status('방을 만들었어요. 초대한 친구가 수락하면 함께 이야기할 수 있어요.');await showRoom(got.id);}catch(e){}return;}
+ if(m==='roomAccept'||m==='roomDecline'){try{ms.rooms=await call(m==='roomAccept'?'messenger_room_accept':'messenger_room_decline',{room:b.dataset.room});publish();
+   if(m==='roomAccept')return showRoom(b.dataset.room);draw();}catch(e){}return;}
+ if(m==='roomInvite'){const who=$('#roomInvitePick')?.value;if(!who)return;
+  try{ms.rooms=await call('messenger_room_invite',{room:b.dataset.room,account_ids:[who]});publish();draw();status('초대했어요. 수락하면 방에 들어와요.');}catch(e){}return;}
+ if(m==='roomKick'||m==='roomLeave'){const key=m+':'+(b.dataset.id||b.dataset.room);
+  if(ms.armed!==key){ms.armed=key;const was=b.textContent;b.textContent=m==='roomLeave'?'한 번 더 누르면 나가요 (기록은 남아요)':'한 번 더 누르면 내보내요';setTimeout(()=>{if(ms.armed===key){ms.armed=null;b.textContent=was;}},4000);return;}
+  ms.armed=null;
+  try{ms.rooms=await call(m==='roomLeave'?'messenger_room_leave':'messenger_room_remove',m==='roomLeave'?{room:b.dataset.room}:{room:b.dataset.room,account_id:b.dataset.id});publish();
+   if(m==='roomLeave'){leave();ms.room=null;status('방에서 나왔어요');}draw();}catch(e){}return;}
+ if(m==='roomResend'){const ep=ms.epoch;try{const got=await call('messenger_room_resend',{message_id:b.dataset.id});if(ep===ms.epoch){ms.history=ms.history.filter(x=>x.id!==b.dataset.id);merge(got);draw();}}catch(e){}return;}
  if(m==='groupKick'){const f=friend(b.dataset.id);try{await call('messenger_group_assign',{account_id:b.dataset.id,gid:''});ms.groupShown=b.dataset.gid;await loadFriends();status(VaderI18n.t('@{0} 님을 그룹에서 뺐어요',f?.handle||''),false,true);}catch(e){}return;}
  if(m==='groupRename'){ms.renaming=b.dataset.gid;return draw();}
  if(m==='groupRenameCancel'){ms.renaming=null;return draw();}
@@ -347,10 +457,10 @@ async function act(b){
  }
 }
 async function say(){
- const peer=ms.peer,ep=ms.epoch,text=input.value.trim();if(!text||ms.busy||!peer)return;
+ const peer=ms.peer,room=ms.room,key=draftKey(),ep=ms.epoch,text=input.value.trim();if(!text||ms.busy||!(peer||room))return;
  ms.busy=true;syncCompose();
- try{const m=await api('messenger_send',{account_id:peer,text});
-  drafts[peer]='';
+ try{const m=room?await api('messenger_room_send',{room,text}):await api('messenger_send',{account_id:peer,text});
+  drafts[key]='';
   if(ep===ms.epoch){if(input.value.trim()===text)input.value='';merge(m);draw();input.focus();}
  }catch(e){if(ep===ms.epoch)status(e.message,true);}
  finally{ms.busy=false;syncCompose();}
@@ -372,7 +482,7 @@ function tick(){
    if(ms.state==='ready'){
     const r=await api('messenger_sync');ticks++;
     if(r.received||ticks%6===0)await loadFriends();
-    if(ms.peer&&!box.hidden&&(r.received||r.images||ms.history.some(m=>m.state==='queued')))await refreshTalk(ms.epoch);
+    if((ms.peer||ms.room)&&!box.hidden&&(r.received||r.images||ticks%6===0||ms.history.some(m=>m.state==='queued')))await refreshTalk(ms.epoch);
    }
    delay=5000;
   }catch(e){
@@ -387,16 +497,16 @@ function tick(){
 
 toggle.onclick=()=>open(box.hidden);
 $('#msgClose').onclick=()=>open(false);
-back.onclick=()=>{leave();ms.peer=null;input.value='';draw();($('#msgFind')||stream).focus();};
+back.onclick=()=>{leave();ms.peer=null;ms.room=null;input.value='';draw();($('#msgFind')||stream).focus();};
 box.addEventListener('click',e=>{const b=e.target.closest('[data-m]');if(!b||b.disabled)return;b.disabled=true;Promise.resolve(act(b)).finally(()=>{b.disabled=false;syncCompose();});});
 form.onsubmit=e=>{e.preventDefault();say();};
 input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&e.keyCode!==229){e.preventDefault();say();}});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!box.hidden&&!docked.matches&&!$('#settingsDialog').open){e.preventDefault();open(false,box.contains(document.activeElement));}});
 box.addEventListener('focusout',e=>{const to=e.relatedTarget;if(!docked.matches&&to&&!box.contains(to)&&to!==toggle&&!to.closest?.('[data-friend]'))open(false,false);});
-document.addEventListener('visibilitychange',()=>{if(!document.hidden){tick();if(ms.peer&&!box.hidden)refreshTalk(ms.epoch);}});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){tick();if((ms.peer||ms.room)&&!box.hidden)refreshTalk(ms.epoch);}});
 const start=()=>tick();
 VaderI18n.ready.then(start);
 // 트레이에서 다시 열면: 숨은 동안 코어가 받아 둔 메시지를 친구 목록·대화에 바로 보인다
-const wake=async()=>{await tick();if(ms.state==='ready')await loadFriends().catch(()=>{});if(ms.peer&&!box.hidden)refreshTalk(ms.epoch);};
-window.VaderMessenger={show,wake,close:()=>{if(!box.hidden)open(false,false);}};
+const wake=async()=>{await tick();if(ms.state==='ready')await loadFriends().catch(()=>{});if((ms.peer||ms.room)&&!box.hidden)refreshTalk(ms.epoch);};
+window.VaderMessenger={show,showRoom,wake,close:()=>{if(!box.hidden)open(false,false);}};
 })();

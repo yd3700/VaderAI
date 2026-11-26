@@ -116,21 +116,29 @@ class DesktopController:
         except account.AccountError as exc:
             raise ValueError(str(exc)) from None
 
-    def market_install(self, rune_id, version, archive_sha256=None):
+    def market_install(self, rune_id, version, archive_sha256=None, replace_local=False):
         """목록에서 받아 설치. 설치는 실전 승인이 아니다 — 연습한 뒤 사람이 승인한다.
         archive_sha256 — 확인 창에서 본 패키지. 다르면 받지 않는다 (codex1 2026-11-25)."""
-        from vader.core import catalog_sync
+        from vader.core import catalog, catalog_sync
         with self.lock:
             self._idle('룬을 설치하세요')
+            replace_local = replace_local is True     # 명시적인 참만 동의 (codex1 회신 P2-3)
+            if replace_local:      # 직접 설치한 룬을 더 새 광장 버전으로만 — 화면 값을 믿지 않고 다시 본다
+                rune = self.runes.get(str(rune_id))
+                if (rune is None or not catalog.local_rune(str(rune_id))
+                        or catalog._version(str(version)) <= catalog._version(rune.manifest.version)):
+                    raise ValueError('바꿀 수 있는 직접 설치한 룬이 아니에요. 화면을 새로 고쳐 주세요.')
             try:
                 done = catalog_sync.install(str(rune_id), str(version),
-                                           archive_sha256=None if archive_sha256 is None else str(archive_sha256))
+                                           archive_sha256=None if archive_sha256 is None else str(archive_sha256),
+                                           replace_local=replace_local)
             except catalog_sync.SyncError as exc:
                 raise ValueError(str(exc)) from None
             self._reload()
             return {**self.catalog(), 'market': catalog_sync.listing(), 'installed': {
                 'id': done.manifest.id, 'name': done.manifest.name, 'version': done.manifest.version, 'change': done.change,
-                'granted': done.granted, 'missing': done.missing_settings}}
+                'granted': done.granted, 'missing': done.missing_settings,
+                'kept': (catalog.origins().get(done.manifest.id) or {}).get('replaced_local') if replace_local else None}}
 
     def catalog_alerts(self):
         """목록 안내와 재시작 경고 — 화면이 몇 초마다 따로 묻는다 (작업 중에도 회수가 도착하게, codex1 P2-1).
@@ -155,19 +163,24 @@ class DesktopController:
     def _market_updates(self):
         """내 룬에 [업데이트] 를 띄울 룬 — 광장에 더 새 판이 있는 것만. 지금 받아 둔 목록만 보고 통신하지 않는다
         (자동 온라인 확인을 끈 사람에게 화면을 여는 것만으로 묻지 않는다, codex1 (e)). 늘어나는 권한도 함께."""
-        from vader.core import catalog_sync, permissions
+        from vader.core import catalog, catalog_sync, permissions
         out = {}
         access = catalog_sync.confirmed_access()
         if access is None:
             return out          # 이 계정으로 받을 수 있는지 모른다 — 광장 [목록 새로 고침] 으로 확인 (codex1 2026-11-25)
         for r in catalog_sync.listing().get('releases', []):
             rune = self.runes.get(r['rune_id'])
-            if r['state'] != 'update' or rune is None or r['rune_id'] not in access:
+            if rune is None or r['rune_id'] not in access:
+                continue
+            # 직접 설치한 같은 룬도 광장 판이 더 새로우면 — 확인 창에서 '바꾸기' 로 묻는다 (마스터 2026-11-26)
+            local = r['state'] == 'local' and catalog._version(r['version']) > catalog._version(rune.manifest.version)
+            if r['state'] != 'update' and not local:
                 continue
             have = set(rune.manifest.permissions)
             added = [p for p in r['permissions'] if p not in have]
-            out[r['rune_id']] = {'version': r['version'], 'installed': r['installed'], 'archive_sha256': r['archive_sha256'],
-                                 'name': r['name'], 'added': permissions.describe(added) if added else []}
+            out[r['rune_id']] = {'version': r['version'], 'installed': rune.manifest.version if local else r['installed'],
+                                 'archive_sha256': r['archive_sha256'], 'name': r['name'],
+                                 'added': permissions.describe(added) if added else [], **({'local': True} if local else {})}
         return out
 
     def auto_online(self):

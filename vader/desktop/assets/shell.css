@@ -342,3 +342,37 @@ header{height:44px}
 .share-general select{padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit;font-weight:600}
 .share-general p{margin:4px 0 0}
 .share .actions{margin-top:22px}
+/* 완료 기록·md 가져오기 (2026-11-26) */
+.arch-tools{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:20px}
+.arch-tools label{display:grid;gap:6px}
+.arch-tools input{min-height:40px;padding:8px 10px;color:var(--text);background:var(--surface);border:1px solid var(--line);border-radius:6px;font:inherit;font-size:13px}
+.arch-tools .arch-q{flex:1;min-width:180px}
+.arch-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}
+.arch-actions .text-button{margin-right:auto}
+.arch-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:24px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.arch-stat{display:grid;gap:4px;padding:16px 0}
+.arch-stat+.arch-stat{padding-left:20px;border-left:1px solid var(--line)}
+.arch-stat strong{font-size:26px;font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.arch-stat span{font-size:12px;color:var(--muted)}
+.arch-chart{margin:20px 0 0}
+.arch-bars{display:flex;align-items:flex-end;gap:3px;height:72px;margin-top:10px}
+.arch-bars span{flex:1;height:100%;display:flex;align-items:flex-end}
+.arch-bars i{display:block;width:100%;min-height:1px;background:var(--green);opacity:.75;border-radius:2px 2px 0 0}
+.arch-bars span:hover i{opacity:1}
+.arch-axis{display:flex;justify-content:space-between;margin-top:6px;font-variant-numeric:tabular-nums}
+.arch-months{margin-top:10px;font-variant-numeric:tabular-nums}
+.arch-note{margin-top:20px}
+.arch-count{margin:20px 0 10px}
+.arch-more{margin-top:12px}
+.import-plain{display:flex;gap:16px;flex-wrap:wrap;margin:16px 0 0;padding:0;border:0}
+.import-plain legend{margin-bottom:8px}
+.import-plain label{display:flex;align-items:center;gap:6px;font-size:13px}
+.import-bulk{display:flex;gap:12px;margin-top:16px}
+.import-list{list-style:none;margin:8px 0 12px;padding:0;max-height:min(48vh,420px);overflow-y:auto;border-top:1px solid var(--line)}
+.import-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+.import-row label{display:flex;align-items:center;gap:10px;min-width:0;font-size:13px}
+.import-row .import-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.import-row small{flex:none}
+.import-row.off{opacity:.5}
+.todo-tabs{overflow-x:auto;scrollbar-width:none}.todo-tabs button{white-space:nowrap;flex:none}
+@media(max-width:760px){.todo-bar{flex-wrap:wrap}.todo-bar .todo-tabs{flex:1 1 100%;gap:20px}.todo-member{margin-bottom:8px}.arch-stat+.arch-stat{padding-left:12px}.arch-stat strong{font-size:20px}}

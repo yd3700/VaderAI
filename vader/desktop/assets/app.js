@@ -105,13 +105,14 @@ function marketConfirm(a) {
   :(r.permissions.length?T('필요한 권한 · {0}',esc((r.permission_text||r.permissions).map(x=>T(x)).join(' · '))):T('추가 권한 없음'));
  modal(heading(upgrade?T('{0} 업데이트',name):T('{0} 설치',name)).replace('<h2','<h2 data-raw')
   +'<p class="dialog-copy">'+esc(upgrade?'v'+pick.installed+' → v'+pick.version:'v'+pick.version)+'</p><p class="dialog-copy">'+perm+'</p>'
+  +(u?.local?'<p class="small market-warn">'+T('이 PC 에 직접 설치한 룬을 광장 버전으로 바꿔요. 지금 룬 폴더는 따로 보관하고, 설정·학습 데이터는 그대로예요. 하던 작업은 새 버전에서 처음부터 다시 해야 할 수 있어요.')+'</p>':'')
   +'<p class="small muted">받은 뒤에는 연습 실행으로 확인하고 다시 승인해야 실사용할 수 있어요.</p><p id="dialogError" role="alert"></p>'
-  +'<div class="actions"><button type="button" class="button primary" data-action="marketInstall" data-id="'+esc(id)+'" data-version="'+esc(pick.version)+'" data-sha="'+esc(pick.archive_sha256)+'">'+icon('down')+'받기</button>'+button('closeDialog','취소','stop','ghost')+'</div>');
+  +'<div class="actions"><button type="button" class="button primary" data-action="marketInstall" data-id="'+esc(id)+'" data-version="'+esc(pick.version)+'" data-sha="'+esc(pick.archive_sha256)+'"'+(u?.local?' data-replace="1"':'')+'>'+icon('down')+(u?.local?T('광장 버전으로 바꾸기'):'받기')+'</button>'+button('closeDialog','취소','stop','ghost')+'</div>');
 }
 async function marketInstall(a) {
  a.disabled=true;a.textContent='받는 중…';
- try{const data=await api('market_install',{rune_id:a.dataset.id,version:a.dataset.version,archive_sha256:a.dataset.sha});const d=$('#settingsDialog');if(d.open)d.close();if(state.updates)delete state.updates[a.dataset.id];runesBadge();catalog(data);state.listing=data.market;const done=data.installed;
-  toast(done.name+' v'+done.version+' 를 받았어요. 내 룬에서 연습 실행으로 확인한 뒤 승인하세요.');render();}
+ try{const data=await api('market_install',{rune_id:a.dataset.id,version:a.dataset.version,archive_sha256:a.dataset.sha,replace_local:a.dataset.replace==='1'});const d=$('#settingsDialog');if(d.open)d.close();if(state.updates)delete state.updates[a.dataset.id];runesBadge();catalog(data);state.listing=data.market;const done=data.installed;
+  toast(done.name+' v'+done.version+' 를 받았어요. 내 룬에서 연습 실행으로 확인한 뒤 승인하세요.'+(done.kept?' '+T('예전 룬 폴더는 {0} 에 보관했어요.',done.kept):''));render();}
  catch(err){toast(err.message);loadListing();}
 }
 function render(route=false) {
@@ -676,7 +677,7 @@ function marketView() {
  const act={new:take('설치'),check:take('다시 받기'),update:take('v'+r.installed+' → v'+r.version+' 업데이트'),
   installed:'<p class="small muted">설치됨 · 내 룬에서 연습 실행으로 확인한 뒤 승인하면 실사용할 수 있어요.</p>',
   newer:'<p class="small muted">이 PC 에 v'+esc(r.installed||'')+' 이 설치돼 있어요.</p>',
-  local:'<p class="small market-warn">이 PC 에 직접 설치한 같은 룬이 있어요. 광장 버전으로 바꾸려면 내 룬에서 제거한 뒤 받으세요.</p>'}[r.state]||'';
+  local:updateOf(r.rune_id)?.local?updateButton(r.rune_id,updateOf(r.rune_id)):'<p class="small market-warn">이 PC 에 직접 설치한 같은 룬이 있어요. 광장 버전으로 바꾸려면 내 룬에서 제거한 뒤 받으세요.</p>'}[r.state]||'';
  return '<section class="scene grimoire market" style="--rune:'+look.color+';--rune-rgb:'+look.rgb+'"><div class="rune-atmosphere" aria-hidden="true"></div>'
   +'<div class="rune-left"><h1>광장</h1><p class="rune-intro">운영자가 검토하고 서명한 룬.</p><div class="rune-tree">'+rows+'</div>'+refresh+'</div>'
   +'<div class="rune-showcase"><div class="rune-relic" aria-hidden="true"><div class="relic-aura"></div><div class="relic-orbit orbit-one"></div><div class="relic-orbit orbit-two"></div><div class="relic-stone stone-back"></div><div class="relic-stone stone-front"></div>'+sigil(r.rune_id,true)+'<div class="relic-floor"></div><i class="ember e1"></i><i class="ember e2"></i><i class="ember e3"></i><i class="ember e4"></i></div>'
@@ -915,11 +916,22 @@ const updateOf=id=>state.updates&&Object.hasOwn(state.updates,id)?state.updates[
 function runesBadge() {const a=$('.rail a[data-page="runes"]');if(!a)return;const n=Object.keys(state.updates||{}).length;if(n)a.dataset.badge=T('업데이트 {0}',n);else delete a.dataset.badge;}
 function todoBadge() {const a=$('.rail a[data-page="todo"]');if(!a)return;const n=(state.todos||[]).filter(c=>c.ringing).length;if(n)a.dataset.badge='다시 알림 '+n;else delete a.dataset.badge;}
 // 멤버 공유 (2026-11-18) — 친구 이름은 메신저가 알려 준 목록(state.friends)에서. 모르는 사람은 '친구'.
-const handleOf=id=>{const f=(state.friends||[]).find(x=>x.account_id===id);return f?'@'+f.handle:'친구';};
+const handleOf=id=>{const f=(state.friends||[]).find(x=>x.account_id===id)||(state.msgRooms||[]).flatMap(r=>r.members).find(x=>x.account_id===id);return f?.handle?'@'+f.handle:'친구';};
+const roomName=id=>(state.msgRooms||[]).find(r=>r.id===id)?.name||'방';
 const shareTargets=()=>{const m=state.todoMember||'';if(m.startsWith('g:'))return (state.friends||[]).filter(f=>f.state==='accepted'&&f.verified&&f.group===m.slice(2)).map(f=>f.account_id);return m.startsWith('f:')?[m.slice(2)]:[];};
 function todoShareBits(c) {
  const sent=c.shared_with||[];
- const who=c.owner?'<span class="todo-shared from">'+esc(handleOf(c.owner))+' 님이 공유</span>':sent.length?'<span class="todo-shared">공유 · '+esc(handleOf(sent[0]))+(sent.length>1?' 외 '+(sent.length-1):'')+'</span>':'';
+ const who=c.owner?'<span class="todo-shared from">'+esc(handleOf(c.owner))+' 님이 공유'+(c.share_room?' · <span data-raw>'+esc(roomName(c.share_room))+'</span>':'')+'</span>'
+   +(c.share_req?'<span class="todo-shared">'+T(c.share_req==='done'?'끝냄 요청함 · 주인 확인 기다리는 중':'되돌림 요청함 · 주인 확인 기다리는 중')+'</span>':'')
+  :c.share_room?'<span class="todo-shared">'+T('방 공유')+' · <span data-raw>'+esc(roomName(c.share_room))+'</span></span>'
+  :sent.length?'<span class="todo-shared">공유 · '+esc(handleOf(sent[0]))+(sent.length>1?' 외 '+(sent.length-1):'')+'</span>':'';
+ // 방에 공유 (2026-11-26) — 카드 주인이 판정. 1:1 공유와 섞지 않는다
+ if((state.todoMember||'').startsWith('r:')){const rid=state.todoMember.slice(2),name=roomName(rid);
+  const rb=c.owner||c.state!=='open'?''
+   :c.share_room===rid?'<button type="button" class="button ghost todo-share shared" data-action="todoUnshareRoom" data-id="'+c.id+'" aria-pressed="true" title="다시 누르면 공유를 취소해요">'+icon('confirm')+'<span>공유함</span></button>'
+   :c.share_id?'<span class="todo-shared done-mark">'+T('다른 곳에 공유됨')+'</span>'
+   :'<button type="button" class="button ghost todo-share" data-action="todoShareRoom" data-id="'+c.id+'" data-room="'+esc(rid)+'" title="한 번 누르면 이 방에 공유">'+icon('send')+'<span data-raw>'+esc(name)+'</span></button>';
+  return [who,rb];}
  const to=shareTargets(),rest=to.filter(a=>!sent.includes(a));
  const name=todoMemberName().replace(/ 그룹$/,'');
  const btn=!state.todoMember||c.owner||c.state!=='open'?''
@@ -930,7 +942,7 @@ function todoShareBits(c) {
 }
 function todoCard(c) {
  const today=ymd(new Date()),late=c.state==='open'&&c.due<today,[who,shareBtn]=todoShareBits(c);
- const meta=c.state==='done'?'':c.ringing?'<span class="todo-ring">다시 알림'+(c.remind_at?' · '+c.remind_at.slice(11,16):'')+'</span>':late?'<span class="todo-late">'+md(c.due)+' 예정</span>':c.remind_at?esc((c.due>today?md(c.remind_at)+' ':'')+c.remind_at.slice(11,16)+' 알림'):c.due>today?md(c.due):'';
+ const meta=c.state==='done'?(c.done_at?esc(md(c.done_at))+' '+T('완료'):c.imported?T('가져온 기록'):''):c.ringing?'<span class="todo-ring">다시 알림'+(c.remind_at?' · '+c.remind_at.slice(11,16):'')+'</span>':late?'<span class="todo-late">'+md(c.due)+' 예정</span>':c.remind_at?esc((c.due>today?md(c.remind_at)+' ':'')+c.remind_at.slice(11,16)+' 알림'):c.due>today?md(c.due):'';
  return '<li class="todo-card'+(c.state==='done'?' done':'')+'"'+(c.state==='open'?' data-card="'+c.id+'"':'')+'>'
   +(c.state==='open'?'<span class="todo-grip" aria-hidden="true">'+icon('grip')+'</span>':'')
   +'<button id="todo-check-'+c.id+'" type="button" class="todo-check" role="checkbox" aria-checked="'+(c.state==='done')+'" aria-label="'+esc(c.title+' · '+T(c.state==='done'?'완료 취소':'완료'))+'" data-raw title="완료 전환 · Alt+↑/↓로 순서 이동" data-action="todoDone" data-id="'+c.id+'"><span>'+(c.state==='done'?icon('confirm'):'')+'</span></button>'
@@ -941,16 +953,17 @@ function todoCard(c) {
   +(state.note?.card===c.id?postitView(state.note):'')+'</li>';
 }
 // 멤버 고르기 — 고른 동안만 카드마다 [공유]. 안전 번호를 확인한 친구와 그 친구들이 있는 그룹만 (메신저와 같은 조건).
-function todoMemberName(){const m=state.todoMember||'';if(m.startsWith('g:'))return (state.todoGroups||[]).find(g=>g.id===m.slice(2))?.name+' 그룹';return handleOf(m.slice(2));}
+function todoMemberName(){const m=state.todoMember||'';if(m.startsWith('r:'))return roomName(m.slice(2));if(m.startsWith('g:'))return (state.todoGroups||[]).find(g=>g.id===m.slice(2))?.name+' 그룹';return handleOf(m.slice(2));}
 // 탭 줄 오른쪽 끝의 그룹 고르기 (마스터 2026-11-19) — 메신저에서 만든 그룹이 늘 보인다. 고르면 카드마다 [그룹명에 공유] 한 번 누르기.
 // 고른 그룹은 이 PC 화면에 기억한다(다음에 켜도 그대로). 친구 한 명에게만 보낼 때는 아래 '친구' 묶음에서.
 function todoMemberPick() {
- const fs=(state.friends||[]).filter(f=>f.state==='accepted'&&f.verified),gs=state.todoGroups||[];
+ const fs=(state.friends||[]).filter(f=>f.state==='accepted'&&f.verified),gs=state.todoGroups||[],rs=state.msgRooms||[];
  const opt=(v,t,mine)=>'<option value="'+esc(v)+'"'+(mine?' data-raw':'')+(state.todoMember===v?' selected':'')+'>'+esc(t)+'</option>';
  const live=g=>fs.filter(f=>f.group===g.id).length;
- return '<label class="todo-member"><span class="sr-only">공유할 그룹</span><select id="todoMember" class="select"'+(gs.length||fs.length?'':' disabled')+'>'
+ return '<label class="todo-member"><span class="sr-only">공유할 그룹</span><select id="todoMember" class="select"'+(gs.length||fs.length||rs.length?'':' disabled')+'>'
   +'<option value="">'+(gs.length?'그룹 선택':'그룹 없음 · 메신저에서 만들어요')+'</option>'
   +gs.map(g=>opt('g:'+g.id,g.name+(live(g)?' · '+T('{0}명',live(g)):' '+T('· 대화 가능한 친구 없음')),true)).join('')
+  +(rs.length?'<optgroup label="방">'+rs.map(r=>opt('r:'+r.id,r.name,true)).join('')+'</optgroup>':'')
   +(fs.length?'<optgroup label="친구 한 명에게">'+fs.map(f=>opt('f:'+f.account_id,'@'+f.handle)).join('')+'</optgroup>':'')+'</select></label>';
 }
 try{state.todoMember=localStorage.getItem('vader.todoMember')||'';}catch{}
@@ -962,10 +975,10 @@ function todoView() {
  const open=cs.filter(c=>c.state==='open'),done=cs.filter(c=>c.state==='done'),groups={today:open.filter(c=>c.due<=today||c.ringing),next:open.filter(c=>c.due>today&&!c.ringing),all:open},shown=groups[tab]||groups.today;
  const form='<form class="todo-add" id="todoAdd">'+icon('plus')+'<label class="sr-only" for="todoTitle">할 일</label><input id="todoTitle" maxlength="200" placeholder="할 일을 적고 Enter" autocomplete="off" value="'+esc(state.todoDraft?.title||'')+'"><label class="todo-date"><span id="todoDateLabel">'+(due===today?'오늘':md(due))+'</span><input id="todoDue" aria-label="할 일 날짜" type="date" required value="'+esc(due)+'"></label><button type="submit" class="button primary">추가</button></form>';
  return '<section class="scene todo"><div class="todo-heading"><div><h1>할 일</h1><p class="todo-today">'+now.toLocaleDateString(VaderI18n.lang==='en'?'en-US':'ko-KR',{month:'long',day:'numeric',weekday:'long'})+'</p></div><div class="todo-tools"><button id="todoAiOpen" type="button" class="button ghost" data-action="todoAiOpen" aria-expanded="'+!!state.todoAiOpen+'" aria-controls="todoAi">AI로 정리</button><details class="todo-menu"><summary aria-label="할 일 화면 더보기">'+todoMoreIcon()+'</summary><div class="todo-menu-items"><button type="button" data-action="phoneOpen">폰에서 보기</button><button type="button" data-action="todoPrivacy">저장·전송 안내</button></div></details></div></div>'+form
-  +'<div class="todo-bar"><nav class="todo-tabs" aria-label="할 일 목록">'+[['today','오늘'],['next','예정'],['all','전체']].map(([k,label])=>'<button id="todo-tab-'+k+'" type="button" data-action="todoTab" data-tab="'+k+'" aria-pressed="'+(tab===k)+'">'+label+' <span>'+groups[k].length+'</span></button>').join('')+'</nav>'+todoMemberPick()+'</div>'
+  +'<div class="todo-bar"><nav class="todo-tabs" aria-label="할 일 목록">'+[['today','오늘'],['next','예정'],['all','전체'],['archive','완료 기록']].map(([k,label])=>'<button id="todo-tab-'+k+'" type="button" data-action="todoTab" data-tab="'+k+'" aria-pressed="'+(tab===k)+'">'+label+(groups[k]?' <span>'+groups[k].length+'</span>':'')+'</button>').join('')+'</nav>'+todoMemberPick()+'</div>'
   +(state.todoError?'<p class="ai-bad" role="alert">'+esc(state.todoError)+'</p>':'')
-  +(shown.length?'<ul class="todo-list" aria-label="'+T('{0} 할 일',T({today:'오늘',next:'예정',all:'전체'}[tab]))+'">'+shown.map(todoCard).join('')+'</ul>':'<p class="muted todo-empty">'+(tab==='next'?'예정된 할 일이 없어요.':open.length?'오늘 할 일을 모두 마쳤어요.':'할 일이 없어요. 위 칸에 적고 Enter 를 누르세요.')+'</p>')
-  +'<details id="todoCompleted" class="todo-completed"'+(state.todoCompleted?' open':'')+'><summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>오늘 완료 <span>'+done.length+'</span></summary>'+(done.length?'<ul class="todo-list">'+done.map(todoCard).join('')+'</ul>':'<p class="muted">아직 완료한 일이 없어요.</p>')+'</details>'
+  +(tab==='archive'?archiveView():(shown.length?'<ul class="todo-list" aria-label="'+T('{0} 할 일',T({today:'오늘',next:'예정',all:'전체'}[tab]))+'">'+shown.map(todoCard).join('')+'</ul>':'<p class="muted todo-empty">'+(tab==='next'?'예정된 할 일이 없어요.':open.length?'오늘 할 일을 모두 마쳤어요.':'할 일이 없어요. 위 칸에 적고 Enter 를 누르세요.')+'</p>')
+  +'<details id="todoCompleted" class="todo-completed"'+(state.todoCompleted?' open':'')+'><summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>오늘 완료 <span>'+done.length+'</span></summary>'+(done.length?'<ul class="todo-list">'+done.map(todoCard).join('')+'</ul>':'<p class="muted">아직 완료한 일이 없어요.</p>')+'</details>')
   +(state.todoAiOpen?'<aside id="todoAi" class="todo-ai" aria-labelledby="todoAiTitle"><div class="todo-ai-heading"><h2 id="todoAiTitle">AI로 정리</h2><button type="button" class="icon-button" data-action="todoAiClose" aria-label="AI 정리 닫기">'+icon('close')+'</button></div>'+todoTidyView()+'</aside>':'')+'</section>';
 }
 // 세부 포스트잇 (마스터 요청 2026-11-18) — 카드 제목을 누르면 열린다. 적는 칸 + 하위 항목. 항목을 누르면 그 안으로(드릴다운),
@@ -1080,7 +1093,82 @@ document.addEventListener('keydown',e=>{if(!e.altKey||!['ArrowUp','ArrowDown'].i
  const to=e.key==='ArrowUp'?li.previousElementSibling:li.nextElementSibling;if(!to)return;e.preventDefault();
  const focusId=e.target.id||null,focusAction=e.target.dataset.action;li.parentNode.insertBefore(li,e.key==='ArrowUp'?to:to.nextSibling);
  todoOrder().then(()=>{(focusId&&$('#'+focusId))||main.querySelector('.todo-card[data-card="'+li.dataset.card+'"] [data-action="'+focusAction+'"]')?.focus();});});
-async function todoSet(method,args) {try{state.todos=await api(method,args);loadTodos.last=JSON.stringify(state.todos)+ymd(new Date());todoBadge();render();}catch(e){toast(e.message);}}
+async function todoSet(method,args) {try{state.todos=await api(method,args);loadTodos.last=JSON.stringify(state.todos)+ymd(new Date());todoBadge();render();if(state.todoTab==='archive')loadArchive();}catch(e){toast(e.message);}}
+// 완료 기록 (마스터 2026-11-26) — 지난 완료 카드를 기간·제목으로. 통계는 끝낸 날을 아는 카드만, 가져온 기록은 따로.
+function archState(){if(!state.arch){const now=new Date(),from=new Date(now);from.setDate(now.getDate()-89);state.arch={start:ymd(from),end:ymd(now),q:'',imported:false,data:null};}return state.arch;}
+async function loadArchive(more) {
+ // 마지막으로 연 조건의 답만 쓴다 — 그사이 조건을 바꾸거나 지웠으면 옛 답은 버린다 (codex1 아카이브 회신 1 P2-5)
+ // [더 보기] 는 화면에 보이는 답의 조건에만 이어 붙인다 — 새 조회 중이면 누르지 못한다 (회신 3 P1)
+ const a=archState();if(more&&(a.loading||!a.data))return;
+ const ask={...(more?a.data.ask:{start:a.start,end:a.end,query:a.q,imported:a.imported}),offset:more?a.data.items.length:0},seq=a.seq=(a.seq||0)+1;
+ a.loading=true;render();
+ try{const got=await api('todo_archive',ask);if(seq!==a.seq)return;
+  a.data=more&&a.data?{...got,items:a.data.items.concat(got.items),ask:a.data.ask}:{...got,ask};a.error='';}catch(e){if(seq!==a.seq)return;a.error=e.message;}
+ finally{if(seq===a.seq)a.loading=false;}
+ render();
+}
+function archiveStats(s) {
+ if(!s)return '';
+ const top=Math.max(1,...s.weeks.map(w=>w.n)),tile=(n,label)=>'<div class="arch-stat"><strong>'+esc(String(n))+'</strong><span>'+label+'</span></div>';
+ return '<div class="arch-stats">'+tile(s.done,T('완료'))+tile(s.snoozed,T('미룬 횟수'))+tile(s.avg_days==null?'–':T('{0}일',s.avg_days),T('평균 걸린 날'))+'</div>'
+  +(s.weeks.length>1?'<figure class="arch-chart"><figcaption class="small muted">'+T('주별 완료')+'</figcaption><div class="arch-bars" role="img" aria-label="'+esc(s.weeks.map(w=>md(w.week)+' '+w.n).join(', '))+'">'+s.weeks.map(w=>'<span title="'+esc(md(w.week)+' · '+w.n)+'"><i style="height:'+Math.round(w.n/top*100)+'%"></i></span>').join('')+'</div><div class="arch-axis small muted"><span>'+esc(md(s.weeks[0].week))+'</span><span>'+esc(md(s.weeks[s.weeks.length-1].week))+'</span></div></figure>':'')
+  +(s.months.length?'<p class="small muted arch-months">'+s.months.map(m=>esc(m.month.slice(2).replace('-','.'))+' · '+m.n).join('&emsp;')+'</p>':'');
+}
+function archiveView() {
+ const a=archState(),d=a.data;if(!d&&!a.error&&!a.loading){a.loading=true;queueMicrotask(()=>loadArchive());}   // 다시 그리기가 겹쳐도 한 번만
+ const tools='<form class="arch-tools" id="archForm"><label><span class="small muted">'+T('시작')+'</span><input id="archStart" type="date" value="'+esc(a.start)+'"'+(a.imported?' disabled':'')+'></label><label><span class="small muted">'+T('끝')+'</span><input id="archEnd" type="date" value="'+esc(a.end)+'"'+(a.imported?' disabled':'')+'></label>'
+  +'<label class="arch-q"><span class="small muted">'+T('제목 검색')+'</span><input id="archQ" type="search" maxlength="100" autocomplete="off" value="'+esc(a.q)+'"></label><button type="submit" class="button ghost">'+T('찾기')+'</button></form>'
+  +'<div class="arch-actions"><button type="button" class="text-button" data-action="archImported" aria-pressed="'+a.imported+'">'+(a.imported?T('완료 기록 보기'):T('가져온 기록 보기'))+'</button><button type="button" class="button ghost" data-action="archExport"'+(a.loading||a.error||!d?' disabled':'')+'>'+icon('down')+T('엑셀로 저장')+'</button><button type="button" class="button ghost" data-action="archImport">'+icon('up')+T('md 가져오기')+'</button></div>';
+ if(a.error)return tools+'<p class="ai-bad" role="alert">'+esc(a.error)+'</p>';
+ if(!d)return tools+'<p class="muted todo-empty">'+T('불러오는 중…')+'</p>';
+ const list=d.items.length?'<ul class="todo-list" aria-label="'+esc(a.imported?T('가져온 기록'):T('완료 기록'))+'">'+d.items.map(c=>todoCard({...c,imported:a.imported})).join('')+'</ul>'
+  +(d.more?'<button type="button" class="text-button arch-more" data-action="archMore"'+(a.loading?' disabled':'')+'>'+T('더 보기')+' · '+(d.total-d.items.length)+'</button>':'')
+  :'<p class="muted todo-empty">'+(d.limited?T('기간 안의 완료 기록이 많아 제목으로 찾을 수 없어요. 기간을 좁혀 주세요.'):a.imported?T('가져온 기록이 없어요. [md 가져오기] 로 옮길 수 있어요.'):a.q?T('찾는 제목이 없어요.'):T('이 기간에 끝낸 할 일이 없어요.'))+'</p>';
+ return tools+(a.imported?'<p class="small muted arch-note">'+T('가져온 기록은 날짜를 쓰지 않아 통계에 넣지 않아요.')+'</p>':archiveStats(d.stats))+'<p class="small muted arch-count" role="status">'+T('{0}건',d.total)+'</p>'+list;
+}
+document.addEventListener('submit',e=>{if(e.target.id!=='archForm')return;e.preventDefault();const a=archState();a.start=$('#archStart').value||a.start;a.end=$('#archEnd').value||a.end;a.q=$('#archQ').value.trim();loadArchive();});
+function archExport() {
+ const a=archState();if(a.loading||a.error||!a.data)return;
+ const ask=a.data.ask,n=a.data.total;   // 확인 창의 건수와 저장 조건이 같은 답에서 (회신 2 P1-1)
+ const d=modal(heading(T('엑셀로 저장'))+'<p class="dialog-copy">'+T('지금 보이는 {0}건을 세부 내용까지 엑셀 파일로 저장해요.',n)+'</p>'
+  +'<p class="small muted">'+T('다운로드 폴더에 저장하고 탐색기로 보여 드려요. 파일은 잠기지 않으니 보관에 주의하세요.')+'</p><p id="dialogError" role="alert"></p>'
+  +'<div class="actions"><button type="button" class="button primary" id="archExportGo"'+(n?'':' disabled')+'>'+T('저장')+'</button></div>');
+ $('#archExportGo').onclick=async()=>{const b=$('#archExportGo');b.disabled=true;
+  try{const got=await api('todo_export',{start:ask.start,end:ask.end,imported:ask.imported,query:ask.query});d.close();toast(T('{0}건을 엑셀로 저장했어요.',got.rows));}
+  catch(e){$('#dialogError').textContent=e.message;b.disabled=false;}};
+}
+// md 가져오기 — 미리보기에서 고른 줄만. 이미 가져온 줄은 고를 수 없고, 같은 제목이 있는 줄은 처음엔 빼 둔다.
+async function archImport() {
+ let pre;try{pre=await api('todo_import_pick');}catch(e){return toast(e.message);}if(!pre)return;
+ state.importPre=pre;state.importPick=new Set(pre.items.filter(x=>!x.already&&!x.duplicate).map(x=>x.i));state.importPlain='done';importDialog();
+}
+function importDialog() {
+ const p=state.importPre,pick=state.importPick,c=p.counts,chip=s=>s==='done'?T('끝냄'):s==='open'?T('열린 할 일'):T('표시 없음');
+ const rows=p.items.map(x=>'<li class="import-row'+(x.already?' off':'')+'"><label><input type="checkbox" data-import="'+x.i+'"'+(pick.has(x.i)?' checked':'')+(x.already?' disabled':'')+'><span class="import-title" data-raw>'+esc(x.title)+'</span></label><small class="muted">'+chip(x.state)+(x.children?' · '+T('하위 {0}',x.children):'')+(x.already?' · '+T('이미 가져옴'):x.duplicate?' · '+T('같은 제목 있음'):'')+(x.lost_items?' · '+T('하위 {0}개 빠짐',x.lost_items):'')+(x.lost_body?' · '+T('본문 {0}자 빠짐',x.lost_body):'')+'</small></li>').join('');
+ const lost=p.items.filter(x=>x.lost_items||x.lost_body).length;
+ modal(heading(T('md 가져오기'))
+  +'<p class="dialog-copy" data-raw>'+esc(p.name)+' · '+T('{0}건',c.all)+(c.already?' · '+T('이미 가져옴 {0}',c.already):'')+(c.duplicate?' · '+T('같은 제목 {0}',c.duplicate):'')+'</p>'
+  +'<fieldset class="import-plain"><legend class="small muted">'+T('체크 표시([x]·[ ])가 없는 줄은')+'</legend>'
+  +[['done',T('완료 기록으로')],['open',T('열린 할 일로')]].map(([v,t])=>'<label><input type="radio" name="importPlain" value="'+v+'"'+(state.importPlain===v?' checked':'')+'> '+t+'</label>').join('')+'</fieldset>'
+  +'<div class="import-bulk"><button type="button" class="text-button" data-action="importAll">'+T('모두 고르기')+'</button><button type="button" class="text-button" data-action="importNone">'+T('모두 빼기')+'</button></div>'
+  +'<ul class="import-list">'+rows+'</ul>'
+  +(lost?'<p class="small market-warn">'+T('{0}건은 하위 항목이 3단·50개를 넘거나 본문이 4000자를 넘어 일부가 빠져요. 빠지는 양은 줄마다 적었어요.',lost)+'</p>':'')
+  +'<p class="small muted">'+T('날짜는 가져오지 않아요. 가져오는 동안 AI·공유·알림은 일어나지 않아요. 열린 할 일로 가져온 것은 연결한 폰에도 보이고, [AI로 정리] 를 누르면 그 제목도 보내져요.')+'</p><p id="dialogError" role="alert"></p>'
+  +'<div class="actions"><button type="button" class="button primary" id="importGo"'+(pick.size?'':' disabled')+'>'+T('{0}건 가져오기',pick.size)+'</button></div>',true);
+ $('#importGo').onclick=importApply;
+ $('#settingsDialog').addEventListener('close',()=>{if(state.importPre&&!importApply.busy){state.importPre=null;api('todo_import_cancel').catch(()=>{});}},{once:true});
+}
+document.addEventListener('change',e=>{
+ const i=e.target.dataset?.import;if(i!=null&&state.importPick){e.target.checked?state.importPick.add(+i):state.importPick.delete(+i);const b=$('#importGo');if(b){b.disabled=!state.importPick.size;b.textContent=T('{0}건 가져오기',state.importPick.size);}}
+ if(e.target.name==='importPlain')state.importPlain=e.target.value;
+});
+async function importApply() {
+ const b=$('#importGo');b.disabled=true;importApply.busy=true;
+ try{const got=await api('todo_import_apply',{token:state.importPre.token,picks:[...state.importPick],plain:state.importPlain});state.importPre=null;$('#settingsDialog').close();
+  toast(T('{0}건을 가져왔어요.',got.added)+(got.skipped?' '+T('이미 있던 {0}건은 건너뛰었어요.',got.skipped):''));await loadTodos();loadArchive();}
+ catch(e){$('#dialogError').textContent=e.message;b.disabled=false;}
+ finally{importApply.busy=false;}
+}
 function todoSnooze(a) {
  const id=a.dataset.id,c=state.todos.find(x=>x.id===id),now=new Date();
  const opts=[['1시간 뒤',new Date(now.getTime()+3600e3)],['내일 아침 9시',at9(now,1)],['다음 주 월요일 9시',at9(now,((8-now.getDay())%7)||7)]];
@@ -1108,7 +1196,7 @@ async function phoneOpen(start) {
  const before=phoneOpen.count;phoneOpen.count=r.phones.length;if(before!=null&&r.phones.length>before)toast('폰을 연결했어요. 30초 안에 할 일이 폰으로 가요.');
 }
 function todoDelete(a) {
- const id=a.dataset.id,c=state.todos.find(x=>x.id===id);
+ const id=a.dataset.id,c=state.todos.find(x=>x.id===id)||state.arch?.data?.items.find(x=>x.id===id);if(!c)return;
  const d=modal(heading('할 일 지우기')+'<p class="dialog-copy"><b>'+raw(c.title)+'</b> '+T('를 지울까요? 되돌릴 수 없어요.')+'</p><div class="actions"><button type="button" class="button primary" id="todoDelGo">지우기</button></div>');
  $('#todoDelGo').onclick=async()=>{d.close();await todoSet('todo_delete',{card_id:id});};
 }
@@ -1397,6 +1485,9 @@ const actions={core:()=>navigate('core'),trySamples:()=>start(taskRunes[state.ta
   if(state.noteArmed!==item){state.noteArmed=item;a.textContent='한 번 더 누르면 안쪽까지 지워요';setTimeout(()=>{if(state.noteArmed===item){state.noteArmed=null;if(a.isConnected)a.textContent='지우기';}},4000);return;}
   try{state.note=await api('todo_note_delete',{card_id:n.card,item});state.noteArmed=null;render();$('#noteItem')?.focus();}catch(e){toast(e.message);}},
  todoTab:a=>{state.todoTab=a.dataset.tab;render();},
+ todoShareRoom:a=>todoSet('todo_share_room',{card_id:a.dataset.id,room:a.dataset.room}),todoUnshareRoom:a=>todoSet('todo_unshare_room',{card_id:a.dataset.id}),archMore:()=>loadArchive(true),archExport,archImport,
+ archImported:()=>{const a=archState();a.imported=!a.imported;a.data=null;a.error='';loadArchive();render();},   // 바꾸는 즉시 새 요청 번호로 (회신 2 P2-2)
+ importAll:()=>{state.importPick=new Set(state.importPre.items.filter(x=>!x.already).map(x=>x.i));importDialog();},importNone:()=>{state.importPick=new Set();importDialog();},
  todoAiOpen:()=>{state.todoAiOpen=true;render();$('#todoSay')?.focus();},
  todoAiClose:()=>{state.todoAiOpen=false;render();$('#todoAiOpen')?.focus();},
  todoPrivacy:()=>modal(heading('저장·전송 안내')+'<p class="dialog-copy">할 일은 이 PC 에 저장해요. 내용은 암호화하고 날짜·알림 시각은 그대로 저장해요.</p><p class="dialog-copy">연결한 폰에는 할 일을 보내요. AI로 정리에서 정리 제안을 누르면 적은 말과 열린 할 일의 제목·날짜·알림 시각을 연결한 AI에 보내요. AI 제안은 직접 고른 뒤 적용해야 바뀌어요.</p>'),

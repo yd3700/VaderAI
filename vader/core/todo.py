@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS notes(
 CREATE INDEX IF NOT EXISTS notes_parent ON notes(card, parent);
 CREATE TABLE IF NOT EXISTS bodies(node TEXT PRIMARY KEY, card TEXT NOT NULL, body BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS share_out(id INTEGER PRIMARY KEY AUTOINCREMENT, peer TEXT NOT NULL, payload BLOB NOT NULL);
-CREATE TABLE IF NOT EXISTS share_seen(event TEXT PRIMARY KEY);"""
+CREATE TABLE IF NOT EXISTS share_seen(event TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS imports(key TEXT PRIMARY KEY, card TEXT NOT NULL, at TEXT NOT NULL);"""
 TITLE_MAX = 200
 #: 열쇠 확인→만들기→저장을 한 번에. 앱은 PC 에 하나만 뜬다(gate.hold_instance) — 프로세스 안 잠금이면 된다 (codex1 P1-3).
 _KEY_LOCK = threading.Lock()
@@ -69,9 +70,16 @@ def _db() -> sqlite3.Connection:
     have = {r[1] for r in con.execute("PRAGMA table_info(cards)")}
     for col, kind in (("rev", "INTEGER NOT NULL DEFAULT 0"),   # 2026-11-11 이전 파일
                       ("pos", "INTEGER"),                      # 2026-11-12 이전 파일
-                      ("share_id", "TEXT"), ("owner", "TEXT"), ("shared_with", "TEXT")):   # 2026-11-18 멤버 공유
+                      ("share_id", "TEXT"), ("owner", "TEXT"), ("shared_with", "TEXT"),   # 2026-11-18 멤버 공유
+                      ("imported", "INTEGER NOT NULL DEFAULT 0"),   # 2026-11-26 md 가져오기
+                      # 2026-11-26 방 공유 — 공유한 방, 공유 글 번호(받은 사람 확인), 주인이 매기는 상태 번호
+                      ("share_room", "TEXT"), ("share_msg", "TEXT"), ("share_ver", "INTEGER NOT NULL DEFAULT 0"),
+                      ("share_req", "TEXT"),
+                      # 처음 방 공유를 고를 때 본 방 세대 — 서버가 그 공유 글을 받아들일 때까지만 남는다 (impl 회신 2)
+                      ("share_gen", "INTEGER")):   # 받은 방 카드의 끝냄 요청 — 주인의 상태가 올 때까지 'done'/'open' (impl 회신 P2-5)
         if col not in have:
             _add_column(con, "cards", col, kind)
+    con.execute("CREATE INDEX IF NOT EXISTS cards_done ON cards(state, done_at)")   # 완료 기록 기간 찾기
     return con
 
 
@@ -91,7 +99,7 @@ def _now() -> datetime:
 def _card(row: sqlite3.Row, now: datetime) -> dict:
     return {"id": row["id"], "title": _unseal(row["title"]), "due": row["due"], "state": row["state"],
             "snoozed": row["snoozed"], "remind_at": row["remind_at"], "rev": row["rev"],
-            "owner": row["owner"], "shared_with": json.loads(row["shared_with"] or "[]"),
+            "owner": row["owner"], "shared_with": json.loads(row["shared_with"] or "[]"), "share_room": row["share_room"], "share_req": row["share_req"],
             "ringing": bool(row["remind_at"] and row["state"] == "open" and row["remind_at"] <= now.isoformat())}
 
 
@@ -165,9 +173,18 @@ def _one(con: sqlite3.Connection, cid: str) -> sqlite3.Row:
 
 def done(card_id: str, undo: bool = False, rev: str | None = None, con: sqlite3.Connection | None = None) -> list[dict]:
     own = con or _db()
+    row = _one(own, card_id)
+    if row["share_room"] and row["owner"]:   # 받은 방 카드 — 끝냄은 요청만. 주인 PC 의 상태가 와야 바뀐다 (impl 회신 P2-5)
+        _change(own, card_id, rev, "share_req=?", ("open" if undo else "done",))
+        _queue(own, ["room:" + row["share_room"]], {"op": "done_req", "id": row["share_id"], "undo": bool(undo)})
+        if con is None:
+            flush_shares()
+        return cards() if con is None else []
     _change(own, card_id, rev, "state=?, done_at=?", ("open", None) if undo else ("done", _now().isoformat()))
     row = _one(own, card_id)
-    if row["share_id"]:   # 공유한 할 일 — 끝냄을 상대에게도 (보낼 통에 넣고, 메신저가 열릴 때 보낸다)
+    if row["share_room"]:   # 방에 공유한 할 일 — 주인 PC 가 판정하고 상태를 방에 알린다 (방 회신 3)
+        _room_state(own, row)
+    elif row["share_id"]:   # 공유한 할 일 — 끝냄을 상대에게도 (보낼 통에 넣고, 메신저가 열릴 때 보낸다)
         peers = [row["owner"]] if row["owner"] else json.loads(row["shared_with"] or "[]")
         _queue(own, peers, {"op": "done", "id": row["share_id"], "undo": bool(undo)})
     if con is None:
@@ -260,14 +277,46 @@ def unshare(card_id: str, account_ids: list[str]) -> list[dict]:
     return cards()
 
 
-def flush_shares(send=None) -> int:
-    """보낼 통을 비운다. 보낸 것만 지운다(실패한 것은 다음에). 보낸 개수."""
+def _unshare_failed(con, sid: str) -> None:
+    """처음 방 공유가 아무에게도 닿지 못했다 — 공유를 풀어 사람이 지금 멤버를 보고 다시 고르게 (impl 회신 1 P1-4·회신 2)."""
+    for r in con.execute("SELECT id, payload FROM share_out WHERE peer LIKE 'room:%'").fetchall():
+        if json.loads(_unseal(r["payload"])).get("id") == sid:
+            con.execute("DELETE FROM share_out WHERE id=?", (r["id"],))
+    con.execute("UPDATE cards SET share_id=NULL, share_room=NULL, share_msg=NULL, share_gen=NULL, rev=rev+1 "
+                "WHERE share_id=? AND owner IS NULL", (sid,))
+
+
+def _settle_room_shares(con, room_state) -> None:
+    """보낸 처음 공유 글이 서버에 받아들여졌는지 — 앱을 다시 켜도 이어서 본다. 받아들여지면 확정, 끝내 실패하면 공유를 푼다."""
+    for c in con.execute("SELECT share_id, share_msg FROM cards WHERE owner IS NULL AND share_room IS NOT NULL "
+                         "AND share_msg IS NOT NULL AND share_gen IS NOT NULL").fetchall():
+        st = room_state(c["share_msg"])
+        with con:
+            if st in ("sent", "unknown"):   # 받았는지 모르면 공유로 둔다 — 주인이 철회할 수 있게 (impl 회신 6)
+                con.execute("UPDATE cards SET share_gen=NULL WHERE share_id=? AND owner IS NULL", (c["share_id"],))
+            elif st == "failed":
+                _unshare_failed(con, c["share_id"])
+            # queued 는 기다림. 없음 = 아직 보내기 전(대기 행이 같은 번호로 보낸다)
+
+
+def flush_shares(send=None, room_send=None, room_state=None) -> int:
+    """보낼 통을 비운다. 보낸 것만 지운다(실패한 것은 다음에). 보낸 개수. 받는 곳이 'room:<방>' 이면 방 글로."""
     if not (config.data_dir() / "todo.sqlite3").exists():
         return 0
     if send is None:
         from vader.core import messenger
         send = messenger.send
+    if room_send is None:
+        from vader.core import messenger_rooms
+        room_send = messenger_rooms.send
+    from vader.core import messenger_rooms
+    if room_state is None:
+        room_state = messenger_rooms.message_state
     con, sent, stuck = _db(), 0, set()
+    try:
+        _settle_room_shares(con, room_state)
+    except Exception:   # noqa: BLE001 — 메신저가 아직 안 열렸다: 다음에
+        pass
     for r in con.execute("SELECT id, peer, payload FROM share_out ORDER BY id LIMIT 50").fetchall():
         if r["peer"] in stuck:   # 같은 사람에게는 순서대로만 — 앞 알림이 실패하면 뒤(예: 취소)는 다음에 (codex1 unshare 회신 1)
             continue
@@ -277,13 +326,174 @@ def flush_shares(send=None) -> int:
             text = json.dumps({**payload, "ev": uuid.uuid4().hex}, ensure_ascii=False)
             con.execute("UPDATE share_out SET payload=? WHERE id=?", (_seal(text), r["id"]))
         try:
-            send(r["peer"], SHARE_MARK + text)
+            if r["peer"].startswith("room:"):
+                room_id = r["peer"][5:]
+                if payload.get("op") == "share":
+                    card = con.execute("SELECT share_gen, share_msg FROM cards WHERE share_id=? AND owner IS NULL AND share_room=?",
+                                       (payload["id"], room_id)).fetchone()
+                    if not card or card["share_gen"] is None:
+                        con.execute("DELETE FROM share_out WHERE id=?", (r["id"],))   # 취소됐거나 세대를 모르는 처음 공유 — 보내지 않는다 (impl 회신 3 P1)
+                        continue
+                    # 처음 공유 글의 번호를 보내기 전에 카드에 남긴다(바로 커밋). 그 뒤의 취소는 철회를 예약하고,
+                    # 겹친 flush·중단 뒤 다시 켬은 같은 번호의 글을 이어 쓴다 — 두 번 만들지 않는다 (impl 회신 5)
+                    cid = card["share_msg"]
+                    if cid is None:
+                        con.execute("UPDATE cards SET share_msg=? WHERE share_id=? AND owner IS NULL AND share_msg IS NULL",
+                                    (str(uuid.uuid4()), payload["id"]))
+                        cid = con.execute("SELECT share_msg FROM cards WHERE share_id=? AND owner IS NULL",
+                                          (payload["id"],)).fetchone()["share_msg"]
+                    if room_state(cid) is not None:   # 이미 메신저에 있다 — 받아들여졌는지는 _settle_room_shares 가 본다
+                        con.execute("DELETE FROM share_out WHERE id=?", (r["id"],))
+                        continue
+                    try:   # 고를 때 본 방 세대로만 — 그사이 멤버가 바뀌었으면 메신저가 보내지 않고 실패 글로 남긴다
+                        got = room_send(room_id, SHARE_MARK + text, generation=card["share_gen"], client_id=cid)
+                    except messenger_rooms.M.NotInRoom:
+                        got = {"state": "failed"}   # 방을 나갔다 — 다시 해도 같다 (impl 회신 3 P2)
+                    if got.get("state") == "failed":
+                        with con:
+                            _unshare_failed(con, payload["id"])
+                        continue
+                else:
+                    try:
+                        got = room_send(room_id, SHARE_MARK + text)
+                    except messenger_rooms.M.NotInRoom:
+                        con.execute("DELETE FROM share_out WHERE id=?", (r["id"],))   # 나간 방의 상태·요청 알림은 버린다
+                        continue
+                    if got.get("state") == "failed":
+                        raise RuntimeError("room members changed")   # 상태·요청 알림은 다음에 (화면에 안 나가는 내부 신호)
+            else:
+                send(r["peer"], SHARE_MARK + text)
         except Exception:   # noqa: BLE001 — 메신저 닫힘·친구 아님·네트워크: 남겨 두고 다음에
             stuck.add(r["peer"])
             continue
         con.execute("DELETE FROM share_out WHERE id=?", (r["id"],))
         sent += 1
     return sent
+
+
+# ── 방에 공유 (2026-11-26, codex1 방 설계 회신 3) ──
+# 카드 주인 = 공유한 사람(방장 무관). 주인만 공유·수정·철회. 멤버의 끝냄은 '요청' 이고 주인 PC 가 판정해 상태(ver)를 방에 알린다.
+# 받는 쪽은 주인이 보낸 상태만, 더 큰 ver 일 때만 — 역순·중복 도착이 무해하다. 요청은 그 공유 글을 실제로 받은 사람만.
+
+def share_room(card_id: str, room: str) -> list[dict]:
+    room = str(room or "")
+    if not (0 < len(room) <= 64):
+        raise TodoError("공유할 방을 알아보지 못했어요.")
+    con = _db()
+    row = _one(con, card_id)
+    if row["owner"]:
+        raise TodoError("공유받은 할 일은 다시 공유할 수 없어요.")
+    if row["state"] != "open":
+        raise TodoError("끝낸 할 일은 공유하지 않아요.")
+    if row["share_room"] == room:
+        return cards()
+    if row["share_id"]:
+        raise TodoError("이미 다른 곳에 공유한 할 일이에요. 공유를 취소한 뒤 방에 공유해 주세요.")
+    from vader.core import messenger, messenger_rooms
+    try:
+        gen = messenger_rooms.generation(room)
+    except messenger.MessengerError:
+        raise TodoError("들어가 있는 방에만 공유할 수 있어요.") from None
+    sid = uuid.uuid4().hex
+    with con:
+        con.execute("BEGIN")
+        con.execute("UPDATE cards SET share_id=?, share_room=?, share_ver=0, share_gen=?, rev=rev+1 WHERE id=?", (sid, room, gen, card_id))
+        _queue(con, ["room:" + room], {"op": "share", "id": sid, "title": _unseal(row["title"]), "due": row["due"]})
+    flush_shares()
+    return cards()
+
+
+def unshare_room(card_id: str) -> list[dict]:
+    con = _db()
+    row = _one(con, card_id)
+    if row["owner"] or not row["share_room"]:
+        raise TodoError("내가 방에 공유한 할 일만 취소할 수 있어요.")
+    with con:
+        con.execute("BEGIN IMMEDIATE")   # 보내는 중 표시와 겨룬다 — 판단은 잠근 뒤 다시 읽은 값으로 (impl 회신 4)
+        row = _one(con, card_id)
+        if not row["share_room"]:
+            return cards()
+        if row["share_msg"] is None:   # 처음 공유 글이 아직 메신저로 안 갔다 — 대기 행째 지운다. 알릴 사람도 없다 (impl 회신 3 P1)
+            _unshare_failed(con, row["share_id"])
+        else:
+            _queue(con, ["room:" + row["share_room"]], {"op": "unshare", "id": row["share_id"]})
+            con.execute("UPDATE cards SET share_id=NULL, share_room=NULL, share_msg=NULL, share_gen=NULL, rev=rev+1 WHERE id=?",
+                        (card_id,))
+    flush_shares()
+    return cards()
+
+
+def _room_state(con, row) -> None:
+    """주인 카드의 지금 상태를 방에 — 번호를 올려서."""
+    ver = row["share_ver"] + 1
+    con.execute("UPDATE cards SET share_ver=? WHERE id=?", (ver, row["id"]))
+    _queue(con, ["room:" + row["share_room"]], {"op": "state", "id": row["share_id"], "done": row["state"] == "done", "ver": ver})
+
+
+def receive_room_share(room: str, sender: str, text: str, event: str = "", recipients_of=None) -> bool:
+    """방 글 하나를 적용한다. recipients_of(공유 글 번호) → 그 글을 받은 계정들 (메신저가 넘긴다)."""
+    if not isinstance(text, str) or not text.startswith(SHARE_MARK):
+        return False
+    try:
+        msg = json.loads(text[len(SHARE_MARK):])
+        sid, op = str(msg["id"]), msg["op"]
+    except (ValueError, KeyError, TypeError):
+        return True
+    if not (0 < len(sid) <= 64):
+        return True
+    ev = msg.get("ev")
+    if isinstance(ev, str) and 0 < len(ev) <= 64:
+        event = f"room:{room}:{sender}:{ev}"
+    revoked = f"revoked:{room}:{sender}:{sid}"   # 주인별 — 다른 멤버의 철회가 주인의 공유를 막지 못한다 (impl 회신 P1-2)
+    con = _db()
+    with con:
+        con.execute("BEGIN IMMEDIATE")
+        if event:
+            if con.execute("SELECT 1 FROM share_seen WHERE event=?", (event,)).fetchone():
+                return True
+            con.execute("INSERT INTO share_seen(event) VALUES (?)", (event,))
+        if op == "share":
+            if con.execute("SELECT 1 FROM share_seen WHERE event=?", (revoked,)).fetchone():
+                return True                                  # 철회된 공유가 늦게 왔다
+            title, due = str(msg.get("title", "")).strip()[:TITLE_MAX], str(msg.get("due", ""))
+            try:
+                due = date.fromisoformat(due).isoformat()
+            except ValueError:
+                due = _now().date().isoformat()
+            if not title:
+                return True
+            got = con.execute("SELECT id FROM cards WHERE share_id=? AND owner=? AND share_room=?", (sid, sender, room)).fetchone()
+            if got:
+                con.execute("UPDATE cards SET title=?, due=?, rev=rev+1 WHERE id=?", (_seal(title), due, got["id"]))
+            elif con.execute("SELECT count(*) FROM cards WHERE owner IS NOT NULL").fetchone()[0] < SHARED_TOTAL:
+                con.execute("INSERT INTO cards(id,title,due,created_at,share_id,owner,share_room) VALUES (?,?,?,?,?,?,?)",
+                            (uuid.uuid4().hex, _seal(title), due, _now().isoformat(), sid, sender, room))
+        elif op == "state":
+            ver = msg.get("ver")
+            if type(ver) is not int:
+                return True
+            for row in con.execute("SELECT * FROM cards WHERE share_id=? AND owner=? AND share_room=? AND share_ver<?",
+                                   (sid, sender, room, ver)).fetchall():
+                done_ = bool(msg.get("done"))
+                con.execute("UPDATE cards SET state=?, done_at=?, share_ver=?, share_req=NULL, rev=rev+1 WHERE id=?",
+                            ("done" if done_ else "open", _now().isoformat() if done_ else None, ver, row["id"]))
+        elif op == "done_req":
+            row = con.execute("SELECT * FROM cards WHERE share_id=? AND share_room=? AND owner IS NULL", (sid, room)).fetchone()
+            got = recipients_of(row["share_msg"]) if row and row["share_msg"] and recipients_of else []
+            if got is None:   # 받은 사람이 아직 확정 전 — 이 요청은 남겨 두고 다음 받기 때 판정(거래째 되돌려 본 적 없게) (impl 회신 8)
+                raise RuntimeError("room share recipients not settled")
+            if row and sender in got:
+                undo = bool(msg.get("undo"))
+                con.execute("UPDATE cards SET state=?, done_at=?, rev=rev+1 WHERE id=?",
+                            ("open", None, row["id"]) if undo else ("done", _now().isoformat(), row["id"]))
+                _room_state(con, con.execute("SELECT * FROM cards WHERE id=?", (row["id"],)).fetchone())
+        elif op == "unshare":
+            con.execute("INSERT OR IGNORE INTO share_seen(event) VALUES (?)", (revoked,))
+            for row in con.execute("SELECT id FROM cards WHERE share_id=? AND owner=? AND share_room=?", (sid, sender, room)).fetchall():
+                con.execute("DELETE FROM cards WHERE id=?", (row["id"],))
+                con.execute("DELETE FROM notes WHERE card=?", (row["id"],))
+                con.execute("DELETE FROM bodies WHERE card=?", (row["id"],))
+    return True
 
 
 def receive_share(sender: str, text: str, event: str = "") -> bool:

@@ -71,3 +71,38 @@ def test_an_access_answer_that_arrives_after_an_account_switch_is_dropped(monkey
     catalog_sync.refresh()
     assert catalog_sync.confirmed_access() == {"reader"}
     assert catalog_sync._last["next"] > time.time() + catalog_sync.RETRY_SECONDS
+
+
+def test_a_directly_installed_rune_gets_an_update_only_when_the_plaza_version_is_newer(monkeypatch):
+    """직접 설치한 룬도 광장 판이 더 높으면 [업데이트] — '바꾸기' 표시와 이 PC 의 버전으로 (마스터 2026-11-26)."""
+    monkeypatch.setattr(catalog_sync, "confirmed_access", lambda: {"mine", "ahead"})
+    monkeypatch.setattr(catalog_sync, "listing", lambda: {"enabled": True, "releases": [
+        {"rune_id": rid, "version": "1.3.4", "name": rid, "installed": None, "state": "local",
+         "archive_sha256": "b" * 64, "permissions": []} for rid in ("mine", "ahead")]})
+    rune = lambda v: SimpleNamespace(manifest=SimpleNamespace(permissions=[], version=v))   # noqa: E731
+    me = SimpleNamespace(runes={"mine": rune("1.3.2"), "ahead": rune("1.3.4")})
+    assert DesktopController._market_updates(me) == {"mine": {
+        "version": "1.3.4", "installed": "1.3.2", "archive_sha256": "b" * 64, "name": "mine", "added": [], "local": True}}
+
+
+def test_switching_a_direct_install_is_refused_unless_it_is_local_and_older(monkeypatch):
+    import threading
+
+    import pytest
+    from vader.core import catalog
+    seen = []
+    monkeypatch.setattr(catalog_sync, "install", lambda *a, **k: seen.append(k) or (_ for _ in ()).throw(catalog_sync.SyncError("멈춤")))
+    monkeypatch.setattr(catalog, "local_rune", lambda rid, d=None: rid == "mine")
+    me = SimpleNamespace(lock=threading.RLock(), _idle=lambda why: None,
+                         runes={"mine": SimpleNamespace(manifest=SimpleNamespace(version="1.3.2")),
+                                "other": SimpleNamespace(manifest=SimpleNamespace(version="1.0.0"))})
+    for rid, version in (("mine", "1.3.2"), ("mine", "1.3.1"), ("other", "2.0.0"), ("ghost", "1.0.0")):
+        with pytest.raises(ValueError, match="바꿀 수 있는"):
+            DesktopController.market_install(me, rid, version, "b" * 64, replace_local=True)
+    assert seen == []
+    with pytest.raises(ValueError, match="멈춤"):
+        DesktopController.market_install(me, "mine", "1.3.4", "b" * 64, replace_local=True)
+    assert seen[0]["replace_local"] is True
+    with pytest.raises(ValueError, match="멈춤"):        # 문자열 "false" 는 동의가 아니다 — 일반 받기로 (codex1 회신 P2-3)
+        DesktopController.market_install(me, "other", "2.0.0", "b" * 64, replace_local="false")
+    assert seen[1]["replace_local"] is False

@@ -12,7 +12,7 @@ from threading import Lock, Thread
 from vader.core.checkpoint import CheckpointStore
 from vader.core.runner import JobRunner
 from vader import __version__
-from vader.core import account, config, conversation, gate, journal, messenger, phone, publisher, signing, todo, todo_ai, update
+from vader.core import account, config, conversation, gate, journal, messenger, messenger_rooms, phone, publisher, signing, todo, todo_ai, todo_archive, update
 from vader.core import screen as screen_auto   # 화면 자동화 엔진 중개 (agent-desktop)
 from vader.core import screen_broker
 from vader.desktop.controller import DesktopController
@@ -158,6 +158,22 @@ class DesktopAPI:
                 'messenger_group_save': messenger.group_save,
                 'messenger_group_delete': messenger.group_delete,
                 'messenger_group_assign': messenger.group_assign,
+                # 그룹 채팅방 (2026-11-26) — 방 초대만으로 대화. 방 이름은 이 PC 에만
+                'messenger_rooms': messenger_rooms.rooms,
+                'messenger_room_create': messenger_rooms.create,
+                'messenger_room_rename': messenger_rooms.rename,
+                'messenger_room_invite': messenger_rooms.invite,
+                'messenger_room_accept': messenger_rooms.accept,
+                'messenger_room_decline': messenger_rooms.decline,
+                'messenger_room_leave': messenger_rooms.leave,
+                'messenger_room_remove': messenger_rooms.remove,
+                'messenger_room_history': messenger_rooms.history,
+                'messenger_room_send': messenger_rooms.send,
+                'messenger_room_resend': messenger_rooms.resend,
+                'messenger_room_send_image': messenger_rooms.send_image,
+                'messenger_room_read': messenger_rooms.mark_read,
+                'todo_share_room': todo.share_room,
+                'todo_unshare_room': todo.unshare_room,
                 'run_history': journal.runs,
                 # 화면 자동화 승인 카드 — 이 창(앱 메인)에서만. AI 쪽 창구에는 승인이 없다 (codex1 화면 2단계 계약 3)
                 'screen_pending': screen_auto.pending,
@@ -182,6 +198,11 @@ class DesktopAPI:
                 'todo_move': todo.move,            # 끌어 놓은 순서
                 'todo_due': todo.due,
                 'todo_ack': todo.ack,
+                'todo_archive': todo_archive.archive,     # 완료 기록·통계 (2026-11-26)
+                'todo_export': self._todo_export,          # 저장 창에서 고른 곳에만
+                'todo_import_pick': self._todo_import_pick,
+                'todo_import_apply': todo_archive.import_apply,
+                'todo_import_cancel': todo_archive.drop_pending,
                 'todo_propose': todo_ai.propose,   # 말로 정리 — 제안만, 바꾸지 않는다
                 'todo_apply': todo_ai.apply,       # 사람이 [적용] 을 누른 제안만
                 'phone_list': phone.phones,        # 폰에서 할 일 보기 — 연결 코드로 증명한 폰만 승인
@@ -383,6 +404,7 @@ class DesktopAPI:
         # 화면 자동화가 읽어 둔 화면(ref 파일)도 지운다 — 잠긴 뒤에 남기지 않는다 (agent-desktop P1-3)
         steps = [self._drop_badge, screen_auto.sweep, lambda: self._window and self._window.evaluate_js("location.replace('gate.html')")]
         steps.append(messenger.drop_prepared)   # 보내기 전 사진 미리보기도 — 잠긴 뒤에 남기지 않는다
+        steps.append(todo_archive.drop_pending)  # md 가져오기 미리보기 표도 (codex1 아카이브 회신 1 P2-6)
         if self._controller:
             steps.insert(1, self._controller.record_discard)
         for step in steps:
@@ -453,6 +475,16 @@ class DesktopAPI:
 
     def _pick(self, kind='file'):
         return list(self._window.pick(folder=kind == 'dir', multiple=kind == 'file') or [])
+
+    def _todo_export(self, start, end, imported=False, query=''):
+        # 셸마다 저장 창이 달라(Rust 셸은 열기만) 다운로드 폴더에 두고 탐색기로 보여 준다 (codex1 아카이브 회신 1 P1-1)
+        got = todo_archive.export_file(start, end, bool(imported), str(query or ''))
+        subprocess.Popen(['explorer.exe', '/select,', got['path']])
+        return got
+
+    def _todo_import_pick(self):
+        chosen = self._window.pick(types=('md 파일 (*.md;*.markdown;*.txt)',)) or []
+        return todo_archive.import_preview(Path(chosen[0])) if chosen else None
 
     def _install(self):
         # 버튼 하나: 제작소가 만든 zip, 또는 룬 폴더 안의 .py 하나 (그 폴더를 설치한다).

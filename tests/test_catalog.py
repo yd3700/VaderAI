@@ -405,3 +405,87 @@ def test_a_lost_managed_mark_with_a_surviving_origin_is_blocked_not_local():
     (catalog._file("managed.json")).unlink()                              # 관리 표시만 사라졌다
     v = catalog.verdict("supply_weekly", NOW)
     assert not v["import"] and v["level"] == "corrupt"
+
+
+def test_a_directly_installed_rune_is_switched_to_the_plaza_version_only_when_asked(monkeypatch):
+    """직접 설치한 같은 룬 — 묻지 않으면, 고친 녹화가 있으면, 디스크 판이 같거나 새것이면 바꾸지 않는다.
+    바꿀 때는 예전 폴더를 룬 경로 밖에 통째로 보관하고, 교체 뒤 실패는 pending 으로 잠근다 (2026-11-26, codex1 회신)."""
+    import os
+    import shutil
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_release import installed_rune
+    from vader.core import config, installer, seal
+
+    def local_copy():
+        shutil.rmtree(config.rune_dir() / "reader", ignore_errors=True)
+        folder = installed_rune()
+        rune = folder / "rune.py"
+        rune.write_text(rune.read_text(encoding="utf-8").replace('version="0.1.0"', 'version="0.0.9"'), encoding="utf-8")
+        return folder
+
+    archive = packed_reader()
+    release, _entry = publish(archive)
+    local = local_copy()
+    with pytest.raises(catalog.CatalogError, match="직접 설치한"):
+        catalog.install_catalog(archive, release, NOW)
+    (local / "recordings" / "nav.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(catalog.CatalogError, match="녹화"):
+        catalog.install_catalog(archive, release, NOW, replace_local=True)
+    assert (local / "recordings" / "nav.json").read_text(encoding="utf-8") == "{}" and "reader" not in catalog.origins()
+
+    shutil.rmtree(local)
+    installed_rune()                                       # 디스크는 광장과 같은 0.1.0 — 덮지 않는다
+    with pytest.raises(catalog.CatalogError, match="같거나 더 새것"):
+        catalog.install_catalog(archive, release, NOW, replace_local=True)
+
+    local = local_copy()                                   # 버전을 문자열로 읽을 수 없으면 바꾸지 않는다
+    rune = local / "rune.py"
+    rune.write_text(rune.read_text(encoding="utf-8").replace('version="0.0.9"', "version=VERSION"), encoding="utf-8")
+    before = seal.fingerprint(local)
+    with pytest.raises(catalog.CatalogError, match="버전을 읽지 못해"):
+        catalog.install_catalog(archive, release, NOW, replace_local=True)
+    assert seal.fingerprint(local) == before and "reader" not in catalog.origins()
+
+    local = local_copy()                                   # 링크가 있으면 보관본도 만들지 않는다
+    (local / "outside.md").symlink_to(archive)
+    with pytest.raises(catalog.CatalogError, match="링크"):
+        catalog.install_catalog(archive, release, NOW, replace_local=True)
+    assert not (config.data_dir() / "replaced-runes").exists() and "reader" not in catalog.origins()
+    (local / "outside.md").unlink()
+    import subprocess                                      # 룬 폴더 자신이 정션 — 원장·보관본 전에 거절
+    elsewhere = config.data_dir() / "elsewhere"
+    local.rename(elsewhere)
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(local), str(elsewhere)], check=True, capture_output=True)
+    with pytest.raises(catalog.CatalogError, match="링크"):
+        catalog.install_catalog(archive, release, NOW, replace_local=True)
+    assert not (config.data_dir() / "replaced-runes").exists() and "reader" not in catalog.origins()
+    os.rmdir(local)
+
+    local_copy()
+    real = config.rune_config
+    monkeypatch.setattr(config, "rune_config", lambda *a: (_ for _ in ()).throw(OSError("설정 읽기 실패")))
+    with pytest.raises(OSError):                           # 새 파일이 자리 잡은 뒤 실패 — 로컬로 돌리지 않고 잠근다
+        catalog.install_catalog(archive, release, NOW, replace_local=True)
+    assert catalog.origins()["reader"]["state"] == "pending" and not catalog.verdict("reader", NOW)["import"]
+    monkeypatch.setattr(config, "rune_config", real)
+
+    catalog._restore_origin("reader", None)
+    local = local_copy()
+    (local / "내 메모.md").write_text("옮기지 않은 파일", encoding="utf-8")
+    catalog.install_catalog(archive, release, NOW, replace_local=True)
+    origin = catalog.origins()["reader"]
+    assert origin["state"] == "installed" and not catalog.local_rune("reader")
+    kept = Path(origin["replaced_local"])
+    assert (kept / "내 메모.md").is_file() and installer._installed_version(kept) == "0.0.9"
+    assert config.rune_dir() not in kept.parents
+
+
+def test_only_the_item_itself_counts_as_a_link_not_a_junctioned_parent(tmp_path):
+    """작업공간(상위)만 정션이면 그 아래 일반 룬 폴더는 링크가 아니다. 그 폴더 자신이 정션이면 링크다 (codex1 회신 4)."""
+    import subprocess
+    (tmp_path / "real" / "reader").mkdir(parents=True)
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(tmp_path / "ws"), str(tmp_path / "real")], check=True, capture_output=True)
+    assert not catalog._linked(tmp_path / "ws" / "reader") and not catalog._linked(tmp_path / "real" / "reader")
+    assert catalog._linked(tmp_path / "ws")

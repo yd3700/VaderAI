@@ -929,7 +929,7 @@ def test_a_photo_is_remade_sent_to_a_checked_friend_and_stored_on_both_sides(tal
     prepared = messenger.prepare_image(_photo())
     assert (prepared["w"], prepared["h"]) == (2048, 1365) and prepared["preview"].startswith("data:image/jpeg;base64,")
     dara_device = server.accounts[people["dara"]["account"]]["device"]
-    assert server.devices[dara_device]["features"] == ["image1"]      # 연결할 때 사진을 받을 수 있다고 알렸다
+    assert server.devices[dara_device]["features"] == ["image1", "room1"]      # 연결할 때 사진을 받을 수 있다고 알렸다
     server.devices[dara_device]["features"] = []                     # 옛 앱이라면
     messenger.friends()
     with pytest.raises(messenger.MessengerError, match="받을 수 없는 버전"):
