@@ -973,13 +973,13 @@ function todoView() {
  const cs=state.todos,now=new Date(),today=ymd(now),due=state.todoDraft?.due||today,tab=state.todoTab||'today';
  if(cs==null)return '<section class="scene todo"><h1>할 일</h1>'+(state.todoError?'<p class="ai-bad">'+esc(state.todoError)+'</p>':'<p class="muted">불러오는 중…</p>')+'</section>';
  const open=cs.filter(c=>c.state==='open'),done=cs.filter(c=>c.state==='done'),groups={today:open.filter(c=>c.due<=today||c.ringing),next:open.filter(c=>c.due>today&&!c.ringing),all:open},shown=groups[tab]||groups.today;
- const form='<form class="todo-add" id="todoAdd">'+icon('plus')+'<label class="sr-only" for="todoTitle">할 일</label><input id="todoTitle" maxlength="200" placeholder="할 일을 적고 Enter" autocomplete="off" value="'+esc(state.todoDraft?.title||'')+'"><label class="todo-date"><span id="todoDateLabel">'+(due===today?'오늘':md(due))+'</span><input id="todoDue" aria-label="할 일 날짜" type="date" required value="'+esc(due)+'"></label><button type="submit" class="button primary">추가</button></form>';
- return '<section class="scene todo"><div class="todo-heading"><div><h1>할 일</h1><p class="todo-today">'+now.toLocaleDateString(VaderI18n.lang==='en'?'en-US':'ko-KR',{month:'long',day:'numeric',weekday:'long'})+'</p></div><div class="todo-tools"><button id="todoAiOpen" type="button" class="button ghost" data-action="todoAiOpen" aria-expanded="'+!!state.todoAiOpen+'" aria-controls="todoAi">AI로 정리</button><details class="todo-menu"><summary aria-label="할 일 화면 더보기">'+todoMoreIcon()+'</summary><div class="todo-menu-items"><button type="button" data-action="phoneOpen">폰에서 보기</button><button type="button" data-action="todoPrivacy">저장·전송 안내</button></div></details></div></div>'+form
+ const form='<form class="todo-add" id="todoAdd">'+icon('plus')+'<label class="sr-only" for="todoTitle">할 일</label><input id="todoTitle" maxlength="500" placeholder="할 일을 적고 Enter" autocomplete="off" value="'+esc(state.todoDraft?.title||'')+'"><label class="todo-date"><span id="todoDateLabel">'+(due===today?'오늘':md(due))+'</span><input id="todoDue" aria-label="할 일 날짜" type="date" required value="'+esc(due)+'"></label><button type="submit" class="button primary">추가</button><button type="button" class="button ghost todo-ask" data-action="todoAsk"'+(todoAsk.busy?' disabled':'')+'>'+icon('chat')+'<span>'+(todoAsk.busy?'묻는 중…':'비서에게 묻기')+'</span></button></form>';
+ return '<section class="scene todo"><div class="todo-heading"><div><h1>할 일</h1><p class="todo-today">'+now.toLocaleDateString(VaderI18n.lang==='en'?'en-US':'ko-KR',{month:'long',day:'numeric',weekday:'long'})+'</p></div><div class="todo-tools"><details class="todo-menu"><summary aria-label="할 일 화면 더보기">'+todoMoreIcon()+'</summary><div class="todo-menu-items"><button type="button" data-action="phoneOpen">폰에서 보기</button><button type="button" data-action="todoPrivacy">저장·전송 안내</button></div></details></div></div>'
   +'<div class="todo-bar"><nav class="todo-tabs" aria-label="할 일 목록">'+[['today','오늘'],['next','예정'],['all','전체'],['archive','완료 기록']].map(([k,label])=>'<button id="todo-tab-'+k+'" type="button" data-action="todoTab" data-tab="'+k+'" aria-pressed="'+(tab===k)+'">'+label+(groups[k]?' <span>'+groups[k].length+'</span>':'')+'</button>').join('')+'</nav>'+todoMemberPick()+'</div>'
   +(state.todoError?'<p class="ai-bad" role="alert">'+esc(state.todoError)+'</p>':'')
   +(tab==='archive'?archiveView():(shown.length?'<ul class="todo-list" aria-label="'+T('{0} 할 일',T({today:'오늘',next:'예정',all:'전체'}[tab]))+'">'+shown.map(todoCard).join('')+'</ul>':'<p class="muted todo-empty">'+(tab==='next'?'예정된 할 일이 없어요.':open.length?'오늘 할 일을 모두 마쳤어요.':'할 일이 없어요. 위 칸에 적고 Enter 를 누르세요.')+'</p>')
   +'<details id="todoCompleted" class="todo-completed"'+(state.todoCompleted?' open':'')+'><summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>오늘 완료 <span>'+done.length+'</span></summary>'+(done.length?'<ul class="todo-list">'+done.map(todoCard).join('')+'</ul>':'<p class="muted">아직 완료한 일이 없어요.</p>')+'</details>')
-  +(state.todoAiOpen?'<aside id="todoAi" class="todo-ai" aria-labelledby="todoAiTitle"><div class="todo-ai-heading"><h2 id="todoAiTitle">AI로 정리</h2><button type="button" class="icon-button" data-action="todoAiClose" aria-label="AI 정리 닫기">'+icon('close')+'</button></div>'+todoTidyView()+'</aside>':'')+'</section>';
+  +todoFeedView()+form+'<p class="muted todo-note">'+T('Enter 는 이 PC 에만 추가해요. [비서에게 묻기]를 누르면 적은 말과 열린 할 일(제목·날짜·알림 시각)을 연결된 AI 로 보내요. 끝낸 기록은 보내지 않고 이 PC 에서 찾아요.')+'</p></section>';
 }
 // 세부 포스트잇 (마스터 요청 2026-11-18) — 카드 제목을 누르면 열린다. 적는 칸 + 하위 항목. 항목을 누르면 그 안으로(드릴다운),
 // 위 경로를 누르면 밖으로(드릴업). 3단까지. 적은 내용은 손을 멈추면 저장한다 — 다시 그리지 않아 적던 자리가 그대로다.
@@ -1031,31 +1031,51 @@ async function noteSave() {
 document.addEventListener('input',e=>{if(e.target.id==='noteBody'){clearTimeout(noteTimer);noteTimer=setTimeout(noteSave,700);}});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&state.note&&e.target.closest?.('#todoNote')){e.preventDefault();noteFold();}});
 // 말로 정리 (2026-11-11 마스터 결정) — AI 는 제안만, [적용] 을 눌러야 바뀐다. 보내는 범위는 화면에 그대로 적는다.
-const opWord=c=>c.op==='add'?'추가 · '+esc(c.title)+' · '+md(c.due):c.op==='done'?'끝냄 · '+esc(c.title):c.op==='order'?'순서 바꾸기 · '+c.titles.slice(0,5).map(esc).join(' → ')+(c.titles.length>5?' …':''):'미루기 · '+esc(c.title)+' → '+md(c.until)+' '+c.until.slice(11,16);
-function todoTidyView() {
- const p=state.todoPlan;
- return '<form class="todo-add todo-tidy" id="todoTidy"><label class="sr-only" for="todoSay">말로 정리</label><input id="todoSay" maxlength="500" placeholder="예: 보고서를 내일 아침으로 미뤄 줘" autocomplete="off" value="'+esc(state.todoSay||'')+'"'+(todoTidy.busy||todoApply.busy?' disabled':'')+'><button type="submit" class="button ghost"'+(todoTidy.busy||todoApply.busy?' disabled':'')+'>'+(todoTidy.busy?'제안 만드는 중…':'정리 제안')+'</button></form>'
-  +'<p class="muted todo-note">정리 제안을 누르면 적은 말과 열린 할 일(제목·날짜·알림 시각)을 연결된 AI 로 보내요. 바꾸는 건 아래에서 고르고 적용할 때만이에요.</p>'
-  +(p?'<div class="todo-plan" role="status">'+(p.note?'<p>'+esc(p.note)+'</p>':'')
-   +(p.changes.length?'<ul>'+p.changes.map((c,i)=>'<li><label><input type="checkbox" data-plan="'+i+'"'+(p.pick[i]?' checked':'')+'> '+opWord(c)+'</label></li>').join('')+'</ul>':'<p class="muted">바꿀 것을 찾지 못했어요.</p>')
-   +(p.skipped?'<p class="muted">알아보지 못한 제안 '+p.skipped+'개는 뺐어요.</p>':'')
-   +(p.limited?'<p class="muted">열린 할 일이 많아 앞의 '+p.sent+'개만 AI 에 보냈어요. 나머지 '+p.limited+'개는 이번 제안에 들어가지 않았어요.</p>':'')
-   +'<div class="actions">'+(p.changes.length?'<button type="button" class="button primary" data-action="todoApply">고른 것 적용</button>':'')+'<button type="button" class="text-button" data-action="todoPlanClose">닫기</button></div></div>':'');
+const opWord=c=>c.op==='add'?T('추가')+' · '+raw(c.title)+' · '+md(c.due):c.op==='done'?T('끝냄')+' · '+raw(c.title):c.op==='order'?T('순서 바꾸기')+' · '+c.titles.slice(0,5).map(raw).join(' → ')+(c.titles.length>5?' …':''):T('미루기')+' · '+raw(c.title)+' → '+md(c.until)+' '+c.until.slice(11,16);
+// 비서 (2026-11-26 마스터 결정 — 비서 정리 + 지난 일 묻기를 한 입력창에서). 이 화면을 연 동안만 남는다(잠그면 문으로 가며 사라진다).
+// 제안은 버튼 하나에 하나 — 누른 것만 적용, 처음엔 아무것도 안 바뀐다 (codex1 round6 P1-3·비서 회신 2). 지난 기록은 이 PC 가 찾은 그대로.
+const suggestWord=c=>c.request?T('주인에게 끝냄 요청')+' · '+raw(c.title):opWord(c);
+function lookupView(l) {
+ if(!l)return '';
+ if(l.error)return '<p class="muted">'+esc(l.error)+'</p>';
+ const when=l.start+' ~ '+l.end+(l.query?' · “<span data-raw>'+esc(l.query)+'</span>”':'');
+ if(l.limited)return '<p class="muted">'+when+' · '+T('기록이 너무 많아 찾지 못했어요. 기간을 좁혀 다시 물어봐 주세요.')+'</p>';
+ if(!l.total)return '<p class="muted">'+when+' · '+T('끝낸 기록이 없어요. 기간이나 낱말을 바꿔 물어봐 주세요.')+'</p>';
+ return '<div class="todo-found"><p>'+T('끝낸 기록')+' · '+when+' · <b>'+T('{0}건',l.total)+'</b></p><ul>'
+  +l.items.map(i=>'<li><time datetime="'+esc(i.done_at)+'">'+md(i.done_at.slice(0,10))+'</time><span data-raw>'+esc(i.title)+'</span></li>').join('')+'</ul>'
+  +(l.total>l.items.length?'<button type="button" class="text-button" data-action="todoFoundAll" data-start="'+esc(l.start)+'" data-end="'+esc(l.end)+'" data-q="'+esc(l.query)+'">'+T('{0}건 모두 완료 기록에서 보기',l.total)+'</button>':'')+'</div>';
 }
-async function todoTidy() {
- const t=$('#todoSay');if(!t||!t.value.trim()||todoTidy.busy||todoApply.busy)return;const text=t.value;todoTidy.busy=true;state.todoSay=text;render();
- try{const plan=await api('todo_propose',{text});plan.pick=plan.changes.map(()=>false);state.todoPlan=plan;}catch(e){toast(e.message);}   // 처음엔 아무것도 안 고른 채 — 사람이 하나씩 고른다 (codex1 round6 P1-3)
- finally{todoTidy.busy=false;render();$('#todoSay')?.focus();}
+function todoFeedView() {
+ const feed=state.todoFeed||[];
+ if(!feed.length)return '';
+ return '<div class="todo-feed" aria-live="polite">'+feed.map((t,n)=>'<section class="todo-turn"><p class="todo-q" data-raw>'+esc(t.q)+'</p><div class="todo-a">'
+  +(t.busy?'<p class="muted">'+T('묻는 중…')+'</p>':t.error?'<p class="ai-bad">'+esc(t.error)+'</p>'
+   :(t.plan.note&&!t.plan.lookup?'<p data-raw>'+esc(t.plan.note)+'</p>':'')+lookupView(t.plan.lookup)   // 기록을 찾은 답은 이 PC 의 결과만 — AI 는 기록을 못 봐 그 말이 틀릴 수 있다 (비서 회신 2 P2-4)
+   +(t.plan.changes.length?'<ul class="todo-suggests">'+t.plan.changes.map((c,i)=>{const r=t.done[i];
+     return '<li>'+(r?.ok?'<span class="todo-applied">'+icon('confirm')+suggestWord(c)+'</span>'
+      :'<button type="button" class="button ghost todo-suggest" data-action="todoSuggest" data-turn="'+n+'" data-i="'+i+'"'+(r?.busy?' disabled':'')+'>'+suggestWord(c)+'</button>'+(r?.error?'<small class="ai-bad">'+esc(r.error)+'</small>':''))+'</li>';}).join('')+'</ul>'
+     :!t.plan.lookup&&!t.plan.note?'<p class="muted">'+T('바꿀 것을 찾지 못했어요.')+'</p>':'')
+   +(t.plan.skipped?'<p class="muted">'+T('알아보지 못한 제안 {0}개는 뺐어요.',t.plan.skipped)+'</p>':'')
+   +(t.plan.limited?'<p class="muted">'+T('열린 할 일이 많아 앞의 {0}개만 AI 에 보냈어요.',t.plan.sent)+'</p>':''))
+  +'</div></section>').join('')+'</div>';
 }
-async function todoApply() {
- const p=state.todoPlan;if(!p||todoApply.busy||todoTidy.busy)return;const pick=p.changes.filter((_,i)=>p.pick[i]);   // 고른 것은 state 에 — 다시 그려도 그대로
- if(!pick.length){toast('적용할 것을 골라 주세요.');return;}
- todoApply.busy=true;
- try{const r=await api('todo_apply',{changes:pick}),bad=r.results.filter(x=>!x.ok);state.todos=r.cards;loadTodos.last=JSON.stringify(r.cards)+ymd(new Date());todoBadge();state.todoPlan=null;state.todoSay='';render();
-  toast((r.results.length-bad.length)+'개 적용했어요.'+(bad.length?' '+bad.length+'개는 못 했어요: '+bad[0].error:''));}catch(e){toast(e.message);}
- finally{todoApply.busy=false;}
+async function todoAsk() {
+ const t=$('#todoTitle');if(!t?.value.trim()||todoAsk.busy||todoAdd.busy)return;
+ const turn={q:t.value.trim(),busy:true,done:[]};state.todoFeed=[...(state.todoFeed||[]),turn].slice(-20);todoAsk.busy=true;render();
+ try{turn.plan=await api('todo_propose',{text:turn.q});const now=$('#todoTitle');   // 실패하면 적은 말은 입력창에 남는다
+  if(now&&now.value.trim()===turn.q){now.value='';state.todoDraft={...state.todoDraft,title:''};}}   // 기다리는 사이 새로 적은 말·고른 날짜는 그대로 (비서 회신 2 P2-2)
+ catch(e){turn.error=e.message;}
+ finally{turn.busy=false;todoAsk.busy=false;render();$('#todoTitle')?.focus();}
 }
-document.addEventListener('change',e=>{const i=e.target.dataset?.plan;if(i!=null&&state.todoPlan)state.todoPlan.pick[+i]=e.target.checked;});
+async function todoSuggest(a) {
+ const t=(state.todoFeed||[])[+a.dataset.turn],i=+a.dataset.i,c=t?.plan?.changes[i];
+ if(!c||t.done[i]?.busy||t.done[i]?.ok)return;   // 두 번 눌러도 한 번만
+ t.done[i]={busy:true};render();
+ try{const r=await api('todo_apply',{changes:[c]}),got=r.results[0];state.todos=r.cards;loadTodos.last=JSON.stringify(r.cards)+ymd(new Date());todoBadge();
+  t.done[i]=got.ok?{ok:true}:{error:got.error};}
+ catch(e){t.done[i]={error:e.message};}
+ render();
+}
 async function todoAdd() {
  const t=$('#todoTitle');if(!t.value.trim()||todoAdd.busy)return;todoAdd.busy=true;t.disabled=true;   // Enter 두 번에 카드 두 장 안 생기게, 저장 중엔 다음 초안을 받지 않는다
  let ok=false;
@@ -1063,10 +1083,10 @@ async function todoAdd() {
  finally{todoAdd.busy=false;const now=$('#todoTitle');if(now){now.disabled=false;if(ok)now.value='';now.focus();}}
  if(ok)await loadTodos();
 }
-document.addEventListener('input',e=>{if(e.target.id==='todoSay')state.todoSay=e.target.value;if(e.target.id==='todoTitle'||e.target.id==='todoDue'){state.todoDraft={title:$('#todoTitle').value,due:$('#todoDue').value};$('#todoDateLabel').textContent=state.todoDraft.due===ymd(new Date())?'오늘':state.todoDraft.due?md(state.todoDraft.due):'날짜';}});   // 목록이 다시 그려져도 적던 것은 남는다
+document.addEventListener('input',e=>{if(e.target.id==='todoTitle'||e.target.id==='todoDue'){state.todoDraft={title:$('#todoTitle').value,due:$('#todoDue').value};$('#todoDateLabel').textContent=state.todoDraft.due===ymd(new Date())?'오늘':state.todoDraft.due?md(state.todoDraft.due):'날짜';}});   // 목록이 다시 그려져도 적던 것은 남는다
 document.addEventListener('toggle',e=>{if(e.target.id==='todoCompleted'&&e.target.isConnected)state.todoCompleted=e.target.open;},true);
 document.addEventListener('click',e=>{document.querySelectorAll('.todo-menu[open]').forEach(menu=>{if(!menu.contains(e.target)||e.target.closest('button'))menu.open=false;});});
-document.addEventListener('keydown',e=>{if(e.key!=='Escape'||state.page!=='todo'||$('dialog[open]'))return;const menu=$('.todo-menu[open]');if(menu){menu.open=false;$('summary',menu).focus();}else if(state.todoAiOpen){state.todoAiOpen=false;render();$('#todoAiOpen')?.focus();}});
+document.addEventListener('keydown',e=>{if(e.key!=='Escape'||state.page!=='todo'||$('dialog[open]'))return;const menu=$('.todo-menu[open]');if(menu){menu.open=false;$('summary',menu).focus();}});
 // 순서 바꾸기 — 같은 묶음(다시 알림·오늘·다음) 안에서 끌어 놓거나, 카드에서 Alt+↑/↓ (마스터 요청 2026-11-12).
 // 놓으면 열린 카드 전체의 화면 순서를 코어에 그대로 저장한다.
 async function todoOrder() {
@@ -1474,7 +1494,7 @@ const actions={core:()=>navigate('core'),trySamples:()=>start(taskRunes[state.ta
  back:()=>navigate('core'),confirmResult,settings:openSettings,install:()=>installRune(),devMode,openClient,installClient,connectClient,stopConsole,reviewTest,allowTest,confirmInstall,aiOpenCard,aiConnect,aiCheck,aiRecommend,aiDefault,aiDisconnect,aiAdd,openAi:()=>openAssignments().catch(e=>toast(e.message)),installProject,editRune,linkSource,importRecording,attachFile,recordOpen,recordSave,recordTell,recordDiscard,recordAgain,editWith,closeDialog:()=>$('#settingsDialog').close(),connect,
  retry:()=>retry(),retryPick:async()=>{const p=await api('pick');if(p.length)await retry(p);},
  promote,dismissPromote:()=>{state.dismissed.add(state.job.id);render();},
- graphHome,runSearch,todoSnooze,todoDelete,todoApply,
+ graphHome,runSearch,todoSnooze,todoDelete,
  todoUnshare:async a=>{const c=(state.todos||[]).find(x=>x.id===a.dataset.id),to=shareTargets().filter(x=>(c?.shared_with||[]).includes(x));if(!to.length)return;try{state.todos=await api('todo_unshare',{card_id:a.dataset.id,account_ids:to});loadTodos.last=JSON.stringify(state.todos)+ymd(new Date());render();$('[data-action="todoShare"][data-id="'+a.dataset.id+'"]')?.focus();toast('공유를 취소했어요. 받은 쪽 목록에서도 빠져요.');}catch(e){toast(e.message);}},
  todoShare:async a=>{const to=shareTargets();if(!to.length)return;try{state.todos=await api('todo_share',{card_id:a.dataset.id,account_ids:to});loadTodos.last=JSON.stringify(state.todos)+ymd(new Date());render();toast('공유했어요 ('+todoMemberName()+'). 메신저가 연결돼 있으면 바로, 아니면 연결될 때 보내요.');}catch(e){toast(e.message);}},
  noteOpen:async a=>{if(state.note?.card===a.dataset.id)return noteFold();await noteSave();await noteLoad(a.dataset.id,'');},
@@ -1488,10 +1508,10 @@ const actions={core:()=>navigate('core'),trySamples:()=>start(taskRunes[state.ta
  todoShareRoom:a=>todoSet('todo_share_room',{card_id:a.dataset.id,room:a.dataset.room}),todoUnshareRoom:a=>todoSet('todo_unshare_room',{card_id:a.dataset.id}),archMore:()=>loadArchive(true),archExport,archImport,
  archImported:()=>{const a=archState();a.imported=!a.imported;a.data=null;a.error='';loadArchive();render();},   // 바꾸는 즉시 새 요청 번호로 (회신 2 P2-2)
  importAll:()=>{state.importPick=new Set(state.importPre.items.filter(x=>!x.already).map(x=>x.i));importDialog();},importNone:()=>{state.importPick=new Set();importDialog();},
- todoAiOpen:()=>{state.todoAiOpen=true;render();$('#todoSay')?.focus();},
- todoAiClose:()=>{state.todoAiOpen=false;render();$('#todoAiOpen')?.focus();},
- todoPrivacy:()=>modal(heading('저장·전송 안내')+'<p class="dialog-copy">할 일은 이 PC 에 저장해요. 내용은 암호화하고 날짜·알림 시각은 그대로 저장해요.</p><p class="dialog-copy">연결한 폰에는 할 일을 보내요. AI로 정리에서 정리 제안을 누르면 적은 말과 열린 할 일의 제목·날짜·알림 시각을 연결한 AI에 보내요. AI 제안은 직접 고른 뒤 적용해야 바뀌어요.</p>'),
- phoneOpen:()=>{phoneOpen.count=null;return phoneOpen();},todoPlanClose:()=>{state.todoPlan=null;render();},todoDone:a=>todoSet('todo_done',{card_id:a.dataset.id,undo:a.getAttribute('aria-checked')==='true'}),resign:openResign,pushCatalog,
+ todoAsk,todoSuggest,
+ todoFoundAll:a=>{const x=archState();Object.assign(x,{start:a.dataset.start,end:a.dataset.end,q:a.dataset.q,imported:false,data:null,error:''});state.todoTab='archive';loadArchive();window.scrollTo(0,0);},   // 새 요청 번호로 바로 — 늦게 온 옛 답은 버린다 (비서 회신 2 P1)
+ todoPrivacy:()=>modal(heading('저장·전송 안내')+'<p class="dialog-copy">할 일은 이 PC 에 저장해요. 내용은 암호화하고 날짜·알림 시각은 그대로 저장해요.</p><p class="dialog-copy">연결한 폰에는 할 일을 보내요. [비서에게 묻기]를 누를 때만 적은 말과 열린 할 일의 제목·날짜·알림 시각을 연결한 AI에 보내요. 끝낸 기록은 AI에 보내지 않고 이 PC 에서 찾아 보여 줘요. AI 제안은 버튼을 눌러야 하나씩 바뀌어요.</p>'),
+ phoneOpen:()=>{phoneOpen.count=null;return phoneOpen();},todoDone:a=>todoSet('todo_done',{card_id:a.dataset.id,undo:a.getAttribute('aria-checked')==='true'}),resign:openResign,pushCatalog,
  approveFromResult:()=>{state.returnTo=state.job.id;state.task=state.job.rune_id;navigate('runes');openSeal();},
  seal:openSeal,uninstall:openUninstall,toggleRune,confirmUninstall,assignments:openAssignments,marketInstall,marketConfirm,marketPick:a=>{state.marketPick=a.dataset.id;render();},marketShare:a=>openShare(a.dataset.id),marketRefresh:()=>loadListing(true),
  mapping:openMapping,mappingCorrect,deptDelete,bulkApply,bulkDelete,learnedSave,learnedReset,
@@ -1513,7 +1533,7 @@ document.addEventListener('click',async e=>{
  }catch(err){toast(err.message);}
 });
 addEventListener('resize',()=>{if(state.page==='core'){placeGraph();fitGraph();}});
-document.addEventListener('submit',e=>{if(e.target.matches('.graph-search')){e.preventDefault();runSearch();}else if(e.target.id==='todoAdd'){e.preventDefault();todoAdd();}else if(e.target.id==='todoTidy'){e.preventDefault();todoTidy();}
+document.addEventListener('submit',e=>{if(e.target.matches('.graph-search')){e.preventDefault();runSearch();}else if(e.target.id==='todoAdd'){e.preventDefault();todoAdd();}
  else if(e.target.id==='noteAdd'){e.preventDefault();const v=$('#noteItem').value.trim(),n=state.note;if(!v||!n)return;
   noteSave().then(()=>api('todo_note_add',{card_id:n.card,node:n.node,title:v})).then(got=>{state.note=got;render();$('#noteItem')?.focus();}).catch(err=>toast(err.message));}});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&e.target.id==='graphQ'&&state.lit){e.target.value='';runSearch();}});

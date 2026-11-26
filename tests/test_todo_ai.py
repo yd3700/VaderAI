@@ -70,3 +70,40 @@ def test_ai_can_propose_an_order_and_unlisted_cards_keep_their_place_after(isola
     assert [x["id"] for x in out["cards"] if x["state"] == "open"] == [c["id"], a["id"], b["id"]]
     monkeypatch.setattr(todo_ai, "_ask", lambda *x: json.dumps({"changes": [{"op": "order", "refs": ["c1", "c1"]}, {"op": "order", "refs": ["c9"]}]}))
     assert todo_ai.propose("정렬")["skipped"] == 2   # 겹치거나 없는 카드는 제안하지 않는다
+
+
+def test_a_past_question_is_looked_up_on_this_pc_and_the_records_never_reach_the_ai(isolated_settings, monkeypatch):
+    """비서 정리 + 지난 일 묻기 (2026-11-26) — AI 는 찾을 조건만, 날짜·제목·건수는 이 PC 의 완료 기록에서."""
+    old = todo.add("가나메디칼 단가표 확인")
+    todo.done(old["id"])
+    todo.add("다라상사 견적 보내기")
+    today = datetime.now().date()
+    sent = {}
+
+    def fake_ask(text, now, open_cards):
+        sent["titles"] = [c["title"] for c in open_cards]
+        return json.dumps({"changes": [], "note": "단가표를 찾아볼게요",
+                           "lookup": {"start": (today - timedelta(days=7)).isoformat(), "end": (today + timedelta(days=30)).isoformat(),
+                                      "query": "단가표"}}, ensure_ascii=False)
+    monkeypatch.setattr(todo_ai, "_ask", fake_ask)
+    plan = todo_ai.propose("지난주에 단가표 확인 언제 했지?")
+    assert sent["titles"] == ["다라상사 견적 보내기"]                       # 끝낸 기록은 AI 로 안 간다
+    got = plan["lookup"]
+    assert got["end"] == today.isoformat()                                  # 오늘보다 뒤는 잘라 낸다
+    assert got["total"] == 1 and [i["title"] for i in got["items"]] == ["가나메디칼 단가표 확인"] and got["items"][0]["done_at"]
+    monkeypatch.setattr(todo_ai, "_ask", lambda *a: json.dumps({"changes": [], "lookup": {"start": "어제", "end": "오늘"}}))
+    assert "error" in todo_ai.propose("언제였지?")["lookup"]
+
+
+def test_room_cards_from_others_can_only_be_requested_done_and_never_snoozed(isolated_settings, monkeypatch):
+    now = datetime.now().replace(microsecond=0)
+    con = todo._db()
+    con.execute("INSERT INTO cards(id,title,due,created_at,share_id,owner,share_room) VALUES ('r1',?,?,?,'s1','owner','room')",
+                (todo._seal("방 카드"), now.date().isoformat(), now.isoformat()))
+    card = next(c for c in todo.cards(now) if c["id"] == "r1")
+    by_id = {"r1": card}
+    done = todo_ai.check({"op": "done", "card_id": "r1", "mark": todo.mark(card)}, by_id, now)
+    assert done.get("request") is True
+    with pytest.raises(todo_ai.TodoAiError):
+        todo_ai.check({"op": "snooze", "card_id": "r1", "mark": todo.mark(card),
+                       "until": (now + timedelta(days=1)).isoformat(timespec="minutes")}, by_id, now)
