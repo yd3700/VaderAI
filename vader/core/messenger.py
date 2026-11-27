@@ -17,6 +17,8 @@
 저장: 계정 작업공간 `messenger.sqlite3`. 본문과 세션 상태는 계정 금고(DPAPI)의 무작위 키로 암호화한다.
 같은 Windows 사용자로 도는 프로그램까지 막지는 못한다 (2a 와 같은 고지).
 본문을 로그·오류 문장·화면 도움말 대화·MCP 로 내보내지 않는다 (codex1 P1-7). 받은 본문은 명령·AI 입력으로 쓰지 않는다.
+**받은 글**은 1:1 에서 두 사람이 모두 [받은 글도] 를 켰을 때만 (2026-11-27 마스터 결정 — 서버에서 확인, codex1 next4 ③):
+서버에는 켜짐·since(서버 시각)만 있고, AI 로 보내기 직전에 서버에 다시 묻는다. 받은 글은 서버 시각이 두 since 보다 뒤인 것만.
 **내가 보낸 글**만 예외 하나 (2026-11-27 마스터 결정, codex1 next3 ①): 사람이 대화마다 켠 [비서에게 내 글 보여주기] 뒤에
 이 기기에서 보내 **전달된**(sent) 내 일반 글만, 할 일 [비서에게 묻기] 를 누를 때 기본 AI 로 간다 (`assist_mine`).
 받은 글·공유 글·사진 글·대화 이름·상대 이름은 가지 않는다. 일반 대화·문서 읽기·MCP 에는 붙지 않는다.
@@ -79,13 +81,19 @@ CREATE TABLE IF NOT EXISTS room_outbox (client_id TEXT PRIMARY KEY, sender TEXT 
 CREATE TABLE IF NOT EXISTS room_seen (room TEXT PRIMARY KEY, seq INTEGER NOT NULL);
 DROP TABLE IF EXISTS assist_on;
 CREATE TABLE IF NOT EXISTS assist_perm (conv TEXT PRIMARY KEY, since REAL NOT NULL, gen INTEGER);
+CREATE TABLE IF NOT EXISTS assist_revoke (account TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS assist_epoch (account TEXT PRIMARY KEY, since TEXT NOT NULL);
+DROP TABLE IF EXISTS assist_ver;
+CREATE TABLE IF NOT EXISTS assist_vers (account TEXT PRIMARY KEY, n INTEGER NOT NULL);
 """
 #: 앞선 판의 표에 더한 열 (사진, 2026-11-25) — CREATE TABLE IF NOT EXISTS 는 있는 표에 열을 더하지 않는다
 _COLUMNS = (("outbox", "attachment", "TEXT"), ("peers", "features", "TEXT"),
             # 그룹 채팅방 (2026-11-26) — 방 글은 room 이 있다. 1:1 질의는 room IS NULL 로만
             ("messages", "room", "TEXT"), ("messages", "server_at", "REAL"), ("messages", "room_seq", "INTEGER"),
             ("messages", "recipients", "TEXT"), ("messages", "missed", "TEXT"),
-            ("image_pending", "room", "TEXT"), ("image_ack", "room", "TEXT"))
+            ("image_pending", "room", "TEXT"), ("image_ack", "room", "TEXT"),
+            # 받은 글도 (2026-11-27) — 보낼 통에 넣을 때 알던 내 허용 기간 / 받은 글의 그 값 (codex1 next4 회신 2 #2)
+            ("outbox", "assist_epoch", "TEXT"), ("messages", "assist_epoch", "TEXT"))
 # 비서에게 내 글 허용은 assist_perm 에만 (codex1 회신 5) — 개발 중 판의 assist_on 은 어느 가입·관계 때 켠 것인지 입증할 수 없어
 # 옮기지 않고 버린다. 새 표 이름이라 열 더하기·정리 순서가 중간에 끊겨도 옛 허용이 살아날 길이 없다.
 FEATURES = ["image1", "room1"]       # 이 앱이 받을 수 있다고 서버에 알리는 형식 — room1: 방 글
@@ -609,8 +617,10 @@ def _queue(con, me, row, p, text: str, attachment: str | None = None, image: tup
     with _tx(con):
         con.execute("INSERT OR REPLACE INTO sessions(sid, device, pickle, used) VALUES (?,?,?,?)",
                     (session.session_id, p["device"], session.pickle(_key()), now))
-        con.execute("INSERT INTO outbox(client_id, sender, peer, device, generation, kind, body, created, attachment) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (client_id, row["device"], p["account"], p["device"], p["generation"], kind, base64.b64encode(body).decode(), now, attachment))
+        epoch = con.execute("SELECT since FROM assist_epoch WHERE account=?", (p["account"],)).fetchone()
+        con.execute("INSERT INTO outbox(client_id, sender, peer, device, generation, kind, body, created, attachment, assist_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (client_id, row["device"], p["account"], p["device"], p["generation"], kind, base64.b64encode(body).decode(), now, attachment,
+                     epoch["since"] if epoch else None))
         con.execute("INSERT INTO messages(id, peer, outgoing, text, at, state, device, trusted) VALUES (?,?,1,?,?,'queued',?,1)",
                     (client_id, p["account"], _seal(text), now, p["device"]))
         if image is not None:
@@ -776,7 +786,8 @@ def _flush(con, my_device: str) -> None:
                 _api("POST", "send", {"client_id": o["client_id"], "recipient_account": o["peer"],
                                       "recipient_device": o["device"], "generation": o["generation"],
                                       "kind": o["kind"], "body": o["body"],
-                                      **({"attachment_id": o["attachment"]} if o["attachment"] else {})})
+                                      **({"attachment_id": o["attachment"]} if o["attachment"] else {}),
+                                      **({"assist_epoch": o["assist_epoch"]} if o["assist_epoch"] else {})})
             except account.AccountError as exc:
                 if exc.status not in (400, 403, 409):
                     return               # 연결·제한(429)·아직 다시 묶기 전(412)·서버 사정 — 다음에
@@ -790,6 +801,11 @@ def _flush(con, my_device: str) -> None:
 
 def sync() -> dict:
     """화면이 열려(잠기지 않은) 동안 몇 초마다 부른다. 다른 메신저 일이 돌고 있으면 이번은 건너뛴다."""
+    try:
+        if (config.data_dir() / "messenger.sqlite3").exists():
+            flush_revokes()   # 서버에 못 닿은 '받은 글도' 끄기 — 다시
+    except MessengerError:
+        pass
     with _one(wait=False) as con:
         if con is None:
             return {"skipped": True}
@@ -884,11 +900,13 @@ def _receive(con, me, known, m) -> int:
         room = m.get("room")
         if room:      # 방 글 — 평문 앞의 방 번호가 서버가 준 방과 같아야 그 방 글 (서버가 다른 방으로 옮기지 못하게)
             plain = messenger_rooms.unwrap(room, plain)
-        con.execute("INSERT INTO messages(id, peer, outgoing, text, at, state, device, trusted, room, server_at, room_seq) "
-                    "VALUES (?,?,0,?,?,?,?,?,?,?,?)",
+        epoch = m.get("assist_epoch")
+        con.execute("INSERT INTO messages(id, peer, outgoing, text, at, state, device, trusted, room, server_at, room_seq, assist_epoch) "
+                    "VALUES (?,?,0,?,?,?,?,?,?,?,?,?)",
                     (m["id"], known["account"], _seal(plain) if plain is not None else None, at,
                      "received" if plain is not None else "unreadable", known["device"], int(known["verified"]),
-                     room, messenger_rooms.server_time(m) if room else None, m.get("room_seq") if room else None))
+                     room, messenger_rooms.server_time(m), m.get("room_seq") if room else None,
+                     epoch if isinstance(epoch, str) and len(epoch) <= 80 and not room else None))
         from vader.core.todo import SHARE_MARK
         picture = messenger_image.parse(plain) if plain is not None else None
         trusted = known["verified"] or room      # 방 멤버는 방 초대만으로 — 확인 안 된 표시는 화면이 (마스터 결정 4)
@@ -976,19 +994,171 @@ def assist_set(conv: str, on: bool) -> list[str]:
             p = con.execute("SELECT generation FROM peers WHERE account=?", (conv[3:],)).fetchone() if conv.startswith("dm:") else None
             con.execute("INSERT OR REPLACE INTO assist_perm(conv, since, gen) VALUES (?,?,?)", (conv, time.time(), p["generation"] if p else None))
         else:
-            con.execute("DELETE FROM assist_perm WHERE conv=?", (conv,))
-        return sorted(_assist_rows(con))
+            with _tx(con):    # '내 글' 해제와 '받은 글도' 철회 기록을 한 거래로 — 못 닿으면 남겨 두고 sync 마다 다시
+                con.execute("DELETE FROM assist_perm WHERE conv=?", (conv,))
+                if conv.startswith("dm:"):
+                    _revoke_in(con, conv[3:])
+        left = sorted(_assist_rows(con))
+    if not on and conv.startswith("dm:"):
+        flush_revokes()
+    return left
 
 
-def assist_mine(now: float | None = None) -> dict:
+def _iso(at) -> float | None:
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(str(at).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _ver(con, account_id: str) -> int:
+    """상대별 끄기 버전 — 다른 대화를 끈 것이 이 대화의 켜기를 취소하지 않게 (codex1 next4 회신 5 #2)."""
+    row = con.execute("SELECT n FROM assist_vers WHERE account=?", (str(account_id),)).fetchone()
+    return row["n"] if row else 0
+
+
+def _bump(con, account_id: str) -> None:
+    con.execute("INSERT INTO assist_vers(account, n) VALUES (?, 1) ON CONFLICT(account) DO UPDATE SET n=n+1", (str(account_id),))
+
+
+def _tag(mine, theirs) -> str | None:
+    """동의 기간 꼬리표 — **두 사람 모두** 켠 기간일 때만(보낸 사람 since | 받는 사람 since). 한쪽이라도 없으면 붙이지 않는다."""
+    return f"{mine}|{theirs}" if mine and theirs else None
+
+
+def _remember_tag(account_id: str, got: dict, ver: int) -> bool:
+    """서버가 준 양쪽 허용 기간을 붙잡아 둔다 — 보낼 통에 넣는 글마다 붙인다. 조회를 시작한 뒤 철회가 있었으면(버전이 바뀜)
+    저장하지 않고 거짓 — 부른 쪽은 그 답을 쓰지 않는다(늦은 조회가 철회 전 허용을 돌려주지 않게, codex1 next4 회신 4 #1)."""
+    tag = _tag(got.get("mine"), got.get("theirs"))
+    with _one() as con, _tx(con):
+        if _ver(con, account_id) != ver or con.execute("SELECT 1 FROM assist_revoke WHERE account=?", (str(account_id),)).fetchone():
+            return False
+        if tag:
+            con.execute("INSERT OR REPLACE INTO assist_epoch(account, since) VALUES (?,?)", (str(account_id), tag))
+        else:
+            con.execute("DELETE FROM assist_epoch WHERE account=?", (str(account_id),))
+        return True
+
+
+def _pending(account_id: str) -> bool:
+    with _one() as con:
+        return con.execute("SELECT 1 FROM assist_revoke WHERE account=?", (str(account_id),)).fetchone() is not None
+
+
+_ASSIST_NET = threading.Lock()
+
+
+def flush_revokes() -> None:
+    """서버에 아직 닿지 못한 끄기를 다시 보낸다 (sync 마다). 닿으면 지운다."""
+    with _ASSIST_NET:
+        _flush_revokes()
+
+
+def _flush_revokes() -> None:
+    with _one() as con:
+        waiting = [r["account"] for r in con.execute("SELECT account FROM assist_revoke")]
+    for acct in waiting:
+        try:
+            _api("POST", "assist_revoke", {"account_id": acct})
+        except Exception:  # noqa: BLE001 — 다음 sync 에 또
+            return
+        with _one() as con:
+            con.execute("DELETE FROM assist_revoke WHERE account=?", (acct,))
+
+
+def _revoke_in(con, account_id: str) -> None:
+    """끄기 기록 — 철회 의사·꼬리표 삭제·버전 올림을 부른 쪽의 거래 안에서 함께 (codex1 next4 회신 3 #3)."""
+    con.execute("INSERT OR IGNORE INTO assist_revoke(account) VALUES (?)", (str(account_id),))
+    con.execute("DELETE FROM assist_epoch WHERE account=?", (str(account_id),))
+    _bump(con, account_id)
+
+
+def _revoke(account_id: str) -> None:
+    """끄기 — 내 쪽은 바로 끈다, 서버 삭제는 남겨 두고 닿을 때까지 다시 (codex1 next4 회신 2 #1)."""
+    with _one() as con, _tx(con):
+        _revoke_in(con, account_id)
+    flush_revokes()
+
+
+def recv_status(account_id: str) -> dict:
+    """서버가 아는 '받은 글도' 허용 — {"mine", "theirs", "pending"}. 못 물으면 둘 다 None(보내지 않는 쪽).
+    내 끄기가 아직 서버에 안 닿았으면 내 쪽에서는 꺼진 것(mine None)으로 — 상대 쪽 철회는 '대기' 로 보인다."""
+    if _pending(account_id):
+        flush_revokes()
+    with _one() as con:
+        ver = _ver(con, account_id)
+    try:
+        got = _api("POST", "assist_status", {"account_id": str(account_id)})
+    except Exception:  # noqa: BLE001 — 확인 못 하면 받은 글은 안 간다. 화면은 '확인 못 함' 으로(꺼짐으로 확정하지 않는다)
+        return {"mine": None, "theirs": None, "pending": _pending(account_id), "unknown": True}
+    if not _remember_tag(account_id, got, ver):   # 조회하는 사이 끄기가 있었다 — 이 답은 쓰지 않는다(꺼진 것으로)
+        return {"mine": None, "theirs": got.get("theirs"), "pending": _pending(account_id), "unknown": False, "stale": True}
+    pending = _pending(account_id)
+    return {"mine": None if pending else got.get("mine"), "theirs": got.get("theirs"), "pending": pending, "unknown": False}
+
+
+def recv_set(account_id: str, on: bool) -> dict:
+    """[받은 글도] 켜기·끄기. 켜려면 '내 글' 허용이 켜져 있어야 한다(끄면 함께 꺼짐은 assist_set 이 한다)."""
+    if not on:
+        _revoke(account_id)
+        return recv_status(account_id)
+    with _one() as con:          # 켜기를 접수한 때의 버전 — 잠금을 기다리는 사이 끄기가 있었으면 보내지 않는다 (codex1 next4 회신 5 #1)
+        asked = _ver(con, account_id)
+    if f"dm:{account_id}" not in assist_list():
+        raise MessengerError("먼저 [비서에게 내 글 보여주기] 를 켜 주세요.")
+    if _pending(account_id):
+        flush_revokes()
+        if _pending(account_id):
+            raise MessengerError("앞서 끈 것이 아직 서버에 닿지 않았어요. 연결된 뒤 다시 켜 주세요.")
+    with _ASSIST_NET:             # 켜기를 보내는 동안 끄기는 기다린다 — 끄기가 먼저 닿고 켜기가 뒤집는 일이 없게
+        # 남은 철회를 **먼저** 서버와 맞추고(서버 확인으로만 기록이 없어진다), 그 **뒤에** 접수 버전·'내 글'·대기 여부를 한 번에 마지막으로 본다.
+        # 이 확인과 켜기 보내기 사이에는 철회 기록을 지우는 일이 없다 — 잠금을 쥐고 있어 다른 보내기도 못 낀다 (codex1 next4 회신 7·8)
+        _flush_revokes()
+        with _one() as con:
+            ver = _ver(con, account_id)
+            still = ver == asked and con.execute("SELECT 1 FROM assist_perm WHERE conv=?", (f"dm:{account_id}",)).fetchone()                 and not con.execute("SELECT 1 FROM assist_revoke WHERE account=?", (str(account_id),)).fetchone()
+        if not still:             # 그 사이 끄기(또는 '내 글' 끄기)가 있었거나 철회가 아직 안 닿았다 — 이 켜기는 보내지 않는다
+            return {"mine": None, "theirs": None, "pending": _pending(account_id), "unknown": False, "cancelled": True}
+        try:
+            got = _api("POST", "assist_set", {"account_id": str(account_id), "on": True})
+        except Exception:
+            # 답을 못 받았다 — 서버엔 켜졌을 수 있다. 그 사이 사람이 껐으면(버전이 바뀜) 철회 기록을 남겨 sync 마다 다시 보낸다
+            with _one() as con:
+                if _ver(con, account_id) != ver:
+                    con.execute("INSERT OR IGNORE INTO assist_revoke(account) VALUES (?)", (str(account_id),))
+            _flush_revokes()
+            raise
+        if not _remember_tag(account_id, got, ver):
+            # 켜기를 보내는 사이 끄기를 눌렀다 — 그 끄기를 서버에 다시 맞춘다. 버전은 올리지 않는다(사람의 새 선택이 아니다,
+            # 뒤이어 접수된 켜기를 취소하지 않게 — codex1 next4 회신 6)
+            with _one() as con:
+                con.execute("INSERT OR IGNORE INTO assist_revoke(account) VALUES (?)", (str(account_id),))
+            _flush_revokes()
+            return {"mine": None, "theirs": got.get("theirs"), "pending": _pending(account_id), "unknown": False}
+    return {"mine": got.get("mine"), "theirs": got.get("theirs"), "pending": False, "unknown": False}
+
+
+def assist_mine(now: float | None = None, only: str | None = None) -> dict:
     """켠 대화에서 내가 보낸 글 — 최근 것부터 상한까지. {"messages":[{conv: r1…, at, text}], "convs", "since": {conv: since}}.
     conv 는 임시 번호(r1…)뿐이다. 'since' 는 보내기 직전 다시 확인(assist_still)에 쓴다 — 화면·AI 로는 안 간다."""
     from vader.core.todo import SHARE_MARK
     now = now or time.time()
     with _one() as con:
         rows = _assist_rows(con)
-        if not rows:
-            return {"messages": [], "convs": 0, "since": rows}
+    if only is not None:          # 답장 초안 — 누른 대화 하나만
+        rows = {c: s for c, s in rows.items() if c == only}
+    if not rows:
+        return {"messages": [], "convs": 0, "received": 0, "since": rows}
+    # 받은 글 — 1:1 이고 서버가 양쪽 허용을 지금 확인해 줄 때만 (네트워크는 메신저 잠금 밖에서)
+    recv = {}
+    for conv in rows:
+        if conv.startswith("dm:"):
+            st = recv_status(conv[3:])
+            if st["mine"] and st["theirs"] and _iso(st["mine"]) and _iso(st["theirs"]):
+                recv[conv] = (st, max(_iso(st["mine"]), _iso(st["theirs"])))
+    with _one() as con:
+        rows = {c: s for c, s in _assist_rows(con).items() if only is None or c == only}
         found = []
         for conv, since in rows.items():
             kind, _, key = conv.partition(":")
@@ -1000,17 +1170,32 @@ def assist_mine(now: float | None = None) -> dict:
                 text = _unseal(r["text"])
                 if text.startswith(SHARE_MARK) or text.startswith(messenger_image.MARK) or messenger_image.parse(text) is not None:
                     continue                      # 앱끼리의 자료 — 자르기 **전에** 뺀다
-                found.append((r["at"], conv, text.strip()[:ASSIST_EACH]))
+                found.append((r["at"], conv, text.strip()[:ASSIST_EACH], "me"))
+            if conv in recv:
+                for r in con.execute("""SELECT m.text, m.at FROM messages m WHERE m.room IS NULL AND m.peer=? AND m.outgoing=0
+                        AND m.state='received' AND m.trusted=1 AND m.text IS NOT NULL AND m.server_at IS NOT NULL
+                        AND m.server_at>=? AND m.assist_epoch=? AND m.at>=? ORDER BY m.at DESC LIMIT ?""",
+                                     (key, recv[conv][1], _tag(recv[conv][0]["theirs"], recv[conv][0]["mine"]), now - ASSIST_DAYS * 86400, ASSIST_MAX)):
+                    text = _unseal(r["text"])
+                    if text.startswith(SHARE_MARK) or text.startswith(messenger_image.MARK) or messenger_image.parse(text) is not None:
+                        continue
+                    found.append((r["at"], conv, text.strip()[:ASSIST_EACH], "them"))
     found.sort(reverse=True)
     out, total, labels = [], 0, {}
-    for at, conv, text in found[:ASSIST_MAX]:
+    used = set()
+    for at, conv, text, who in found[:ASSIST_MAX]:
         if not text or total + len(text) > ASSIST_TOTAL:
             continue
         total += len(text)
         label = labels.setdefault(conv, f"r{len(labels) + 1}")
-        out.append({"conv": label, "at": time.strftime("%Y-%m-%dT%H:%M", time.localtime(at)), "text": text})
+        used.add((conv, who))
+        out.append({"conv": label, "from": who, "at": time.strftime("%Y-%m-%dT%H:%M", time.localtime(at)), "text": text})
     out.reverse()                                 # 오래된 것부터 읽히게
-    return {"messages": out, "convs": len(labels), "since": {c: rows[c] for c in labels}}
+    since = {c: rows[c] for c in labels}
+    for conv, who in used:      # 받은 글을 실었으면 보내기 직전에 서버 허용을 다시 본다
+        if who == "them":
+            since["recv:" + conv] = [recv[conv][0]["mine"], recv[conv][0]["theirs"]]
+    return {"messages": out, "convs": len(labels), "received": sum(1 for m in out if m["from"] == "them"), "since": since}
 
 
 def assist_still(since: dict[str, float]) -> bool:
@@ -1019,7 +1204,14 @@ def assist_still(since: dict[str, float]) -> bool:
         return True
     with _one() as con:
         rows = _assist_rows(con)
-    return all(rows.get(c) == s for c, s in since.items())
+    if not all(rows.get(c) == s for c, s in since.items() if not c.startswith("recv:")):
+        return False
+    for key, pair in since.items():   # 받은 글 — 상대가 그 사이 껐는지 서버에 다시 묻는다
+        if key.startswith("recv:"):
+            st = recv_status(key[len("recv:dm:"):])
+            if [st["mine"], st["theirs"]] != list(pair):
+                return False
+    return True
 
 
 # ── 기록 ──

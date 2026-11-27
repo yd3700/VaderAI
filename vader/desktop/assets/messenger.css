@@ -157,3 +157,8 @@ body.msg-open{grid-template-columns:72px minmax(0,1fr) 380px}
 .msg-assist-switch[aria-checked=true]{border-color:#a13743}
 .msg-assist-switch[aria-checked=true] .toggle{background:#d32639}
 .msg-assist-switch[aria-checked=true] .toggle span{transform:translateX(18px)}
+/* [할 일로] — 말풍선에 올리거나 키보드로 갈 때만 보인다 */
+.msg-to-todo{align-self:flex-start;font-size:11px;opacity:0;transition:opacity .15s}
+.msg.me .msg-to-todo{align-self:flex-end}
+.msg:hover .msg-to-todo,.msg-to-todo:focus-visible{opacity:1}
+.msg-assist .msg-draft{justify-self:start;padding:8px 14px;font-size:13px}

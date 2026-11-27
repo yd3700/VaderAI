@@ -162,6 +162,9 @@ class DesktopAPI:
                 # 그룹 채팅방 (2026-11-26) — 방 초대만으로 대화. 방 이름은 이 PC 에만
                 'messenger_assist': messenger.assist_list,     # 비서에게 내 글 보여주기 — 켠 대화 목록
                 'messenger_assist_set': messenger.assist_set,
+                'messenger_assist_recv': messenger.recv_status,         # 받은 글도 — 서버의 양쪽 허용
+                'messenger_assist_recv_set': messenger.recv_set,
+                'assist_reply_draft': todo_ai.reply_draft,              # 답장 초안 — 입력칸에만, 저장 안 함
                 'messenger_rooms': messenger_rooms.rooms,
                 'messenger_room_create': messenger_rooms.create,
                 'messenger_room_rename': messenger_rooms.rename,
@@ -208,6 +211,7 @@ class DesktopAPI:
                 'todo_import_cancel': todo_archive.drop_pending,
                 'todo_runes': todo.rune_links,     # 카드 ↔ 룬 — 이 PC 에만 (폰·공유·AI 로 안 간다)
                 'todo_link_rune': self._todo_link_rune,
+                'todo_rune_opened': todo.rune_opened,   # 효과 재기 — 이 PC 에만 센다
                 'todo_ai_target': todo_ai.target,  # 보낼 AI 이름 — 보내기 전에 화면에
                 'todo_propose': todo_ai.propose,   # 말로 정리 — 제안만, 바꾸지 않는다
                 'todo_apply': todo_ai.apply,       # 사람이 [적용] 을 누른 제안만
@@ -220,6 +224,7 @@ class DesktopAPI:
                 raise ValueError('지원하지 않는 명령입니다.')
             try:
                 messenger.set_alive(lambda: self._gen == gen)   # 메신저는 잠기면 하던 일을 다음 단계에서 멈춘다 (codex1 3c P2-3)
+                todo_ai.installed_runes = self._installed_runes  # 룬 추천 — 지금 설치된 룬 이름 (코어는 설치 목록을 모른다)
                 console_ai.set_alive(lambda: self._gen == gen)  # 로그인 AI 대화도 — 차례를 기다리는 사이 잠갔으면 보내지 않는다 (codex1 next3 ②)
                 data = handlers[method](**args)
             finally:
@@ -490,6 +495,9 @@ class DesktopAPI:
         got = todo_archive.export_file(start, end, bool(imported), str(query or ''))
         subprocess.Popen(['explorer.exe', '/select,', got['path']])
         return got
+
+    def _installed_runes(self):
+        return {rid: r.manifest.name for rid, r in self._controller.runes.items()}
 
     def _todo_link_rune(self, card_id, rune_id=''):
         if rune_id and str(rune_id) not in self._controller.runes:   # 설치된 룬만 — 이름이 같은 다른 것을 대신 고르지 않는다

@@ -211,3 +211,46 @@ def test_locking_never_waits_for_a_slow_usage_lookup_and_drops_its_late_answer(m
     go.set()
     reader.join(5)
     assert out == [None] and console._limits["value"] is None, "잠그기 전 조회의 답은 남기지 않는다"
+
+
+def test_claude_usage_comes_from_the_rate_limit_line_of_a_real_call_and_is_forgotten_on_lock(monkeypatch):
+    """Claude Code 사용량 — 호출의 stream-json 에 같이 오는 rate_limit_event 만. 따로 부르지 않는다. 잠그면 지운다."""
+    console.forget_limits()
+    assert console.claude_limits() == (None, 0.0)
+    lines = "\n".join(json.dumps(x) for x in (
+        {"type": "system", "subtype": "init", "tools": []},
+        {"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
+            "five_hour": {"utilization": 0.09, "resetsAt": 1795774800}, "seven_day": {"utilization": 0.77}}}},
+        {"type": "result", "is_error": False, "result": "네"}))
+    fake = Fake([lines])
+    monkeypatch.setattr(console.subprocess, "Popen", fake)
+    assert console.ConsoleProvider("claude").chat([{"role": "user", "content": "안녕"}]) == "네"
+    assert "stream-json" in fake.calls[0]["args"] and len(fake.calls) == 1
+    windows, seen = console.claude_limits()
+    assert windows == [{"window_mins": 300, "used_percent": 9, "resets_at": 1795774800},
+                       {"window_mins": 10080, "used_percent": 77, "resets_at": None}] and seen > 0
+    console.forget_limits()
+    assert console.claude_limits() == (None, 0.0)
+
+
+def test_a_late_claude_answer_after_locking_does_not_refill_usage_and_odd_usage_lines_still_read(monkeypatch):
+    """잠그기 전에 시작한 호출의 늦은 사용량은 버린다. 사용량 줄이 없거나 모양이 달라도 답은 읽힌다 (codex1 next4 ②)."""
+    console.forget_limits()
+    rate = json.dumps({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": 0.5}}}})
+    done = json.dumps({"type": "result", "is_error": False, "result": "네"})
+
+    class Locking(Fake):
+        def __call__(self, args, cwd, **kw):
+            console.forget_limits()                 # 답이 오기 전에 화면을 잠갔다
+            return super().__call__(args, cwd, **kw)
+    monkeypatch.setattr(console.subprocess, "Popen", Locking([rate + "\n" + done]))
+    assert console.ConsoleProvider("claude").chat([{"role": "user", "content": "안녕"}]) == "네"
+    assert console.claude_limits() == (None, 0.0)
+    for odd in ('{"type": "rate_limit_event", "rate_limit_info": "이상한 값"}', '{"type": "rate_limit_event"}', ""):
+        monkeypatch.setattr(console.subprocess, "Popen", Fake([(odd + "\n" if odd else "") + done]))
+        assert console.ConsoleProvider("claude").chat([{"role": "user", "content": "안녕"}]) == "네"
+    fail = json.dumps({"type": "result", "is_error": True, "api_error_status": 429, "api_error": "usage_limit_reached"})
+    monkeypatch.setattr(console.subprocess, "Popen", Fake([rate + "\n" + fail], code=1))
+    with pytest.raises(OcrProviderUnavailable, match="사용 한도"):
+        console.ConsoleProvider("claude").chat([{"role": "user", "content": "안녕"}])
+

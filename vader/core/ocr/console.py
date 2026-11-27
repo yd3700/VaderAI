@@ -187,14 +187,15 @@ class ConsoleProvider:
             if images:
                 text = f"이 폴더의 그림 파일 {names} 을 Read 로 차례대로 읽고 답하라.\n\n{text}"
             tools = ["--tools", ""] if chat else ["--tools", "Read", "--allowedTools", "Read"]
-            args = [exe, "-p", "--output-format", "json", *tools, "--restricted",
+            # stream-json — 마지막 result 줄이 예전 봉투와 같고, 같이 오는 rate_limit_event 로 구독 사용량을 안다 (2026-11-27 실측)
+            args = [exe, "-p", "--output-format", "stream-json", "--verbose", *tools, "--restricted",
                     "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "dontAsk"] \
                 + (["--model", model] if model else [])
+            gen = _limits["gen"]        # 부르기 시작한 때의 세대 — 그 사이 잠갔으면 늦게 온 사용량은 버린다 (codex1 next4 ②)
             out = _run(args, text, work, CHAT_TIMEOUT_SECONDS if chat else CALL_TIMEOUT_SECONDS)
-            try:
-                envelope = json.loads(out)
-            except ValueError:
-                raise OcrProviderError("Claude Code 응답을 읽지 못했습니다") from None
+            envelope = _envelope(out, gen)
+            if envelope is None:
+                raise OcrProviderError("Claude Code 응답을 읽지 못했습니다")
             if envelope.get("is_error"):
                 _raise_for(envelope.get("api_error_status"), str(envelope.get("api_error", "")), "Claude Code")
             return _text_answer(envelope.get("result")) if chat else _json_answer(str(envelope.get("result", "")))
@@ -350,6 +351,31 @@ def _transcript(messages) -> str:
             + json.dumps(kept, ensure_ascii=False))
 
 
+def _envelope(out: str, gen: int | None = None) -> dict | None:
+    """Claude Code 출력 → 마지막 result 봉투. 줄마다 JSON(stream-json)이면 rate_limit_event 의 사용량도 남긴다.
+    한 덩어리 JSON(예전 json 출력)도 그대로 받는다."""
+    found = None
+    for line in (out or "").splitlines():
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        if d.get("type") == "rate_limit_event":
+            if gen is not None:     # 실패 봉투 읽기(gen 없음)에서는 사용량을 남기지 않는다
+                _remember_claude(d.get("rate_limit_info") or {}, gen)
+        elif d.get("type") == "result" or "type" not in d:
+            found = d
+    if found is None:
+        try:
+            whole = json.loads(out)
+            found = whole if isinstance(whole, dict) else None
+        except ValueError:
+            pass
+    return found
+
+
 def _env() -> dict:
     return {**{k: v for k, v in os.environ.items() if k.upper() not in _API_ENV}, "NO_COLOR": "1"}
 
@@ -374,10 +400,10 @@ def _run(args: list[str], stdin: str, cwd: Path, timeout: int = CALL_TIMEOUT_SEC
         raise OcrProviderError(f"{timeout}초 안에 답하지 않았습니다") from None
     if proc.returncode:
         status = None
-        try:   # Claude Code 는 실패해도 JSON 봉투를 낸다
-            envelope = json.loads(out)
+        envelope = _envelope(out)   # Claude Code 는 실패해도 봉투를 낸다
+        if envelope is not None:
             status, kind = envelope.get("api_error_status"), str(envelope.get("api_error", ""))
-        except (ValueError, AttributeError):
+        else:
             kind = f"{out}\n{err}"
         _raise_for(status, kind, Path(args[0]).stem, proc.returncode)
     return out
@@ -484,6 +510,35 @@ def forget_limits() -> None:
     """화면 잠금·연결 끊기 때 — 지난 값을 버리고, 지금 읽는 중인 답도 버리게 세대를 올린다."""
     with _limits_lock:
         _limits.update(at=0.0, value=None, gen=_limits["gen"] + 1)
+        _claude.update(at=0.0, value=None)
+
+
+# Claude Code — 밖에서 따로 묻는 공식 수단은 없고, 호출할 때마다 stream-json 에 rate_limit_event 가 같이 온다(2026-11-27 실측).
+# 그 값을 메모리에만 남겨 '마지막 호출 기준' 으로 보인다. 사용량을 보려고 따로 부르지 않는다.
+_claude = {"at": 0.0, "value": None}
+_CLAUDE_WINDOWS = {"five_hour": 300, "seven_day": 10080}
+
+
+def _remember_claude(info: dict, gen: int) -> None:
+    import time
+    windows = []
+    unified = info.get("unifiedWindows") if isinstance(info, dict) else None
+    for key, mins in _CLAUDE_WINDOWS.items():
+        w = unified.get(key) if isinstance(unified, dict) else None
+        if isinstance(w, dict) and isinstance(w.get("utilization"), (int, float)):
+            at = w.get("resetsAt")
+            windows.append({"window_mins": mins, "used_percent": round(w["utilization"] * 100),
+                            "resets_at": at if isinstance(at, (int, float)) else None})
+    if windows:
+        with _limits_lock:
+            if _limits["gen"] == gen:
+                _claude.update(at=time.time(), value=windows)
+
+
+def claude_limits() -> tuple:
+    """(창 목록 또는 None, 마지막으로 본 때). 이 앱이 Claude Code 를 부른 적 없으면 (None, 0)."""
+    with _limits_lock:
+        return _claude["value"], _claude["at"]
 
 
 def codex_limits() -> list[dict] | None:

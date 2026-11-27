@@ -93,6 +93,10 @@ def archive(start: str, end: str, query: str = "", offset: int = 0, imported: bo
     con = todo._db()
     rows, every, limited = _found(con, a, b, bool(imported), query)
     stats = None if imported else _stats(every, a, b)
+    if stats is not None:   # 룬 연결 효과 — 기간 안 [룬 열기] 횟수, 룬을 연결한 채 끝낸 횟수 (이 PC 에만, 날짜별 숫자)
+        got = con.execute("SELECT coalesce(sum(opens),0), coalesce(sum(done),0) FROM rune_daily WHERE day BETWEEN ? AND ?",
+                          (a.isoformat(), b.isoformat())).fetchone()
+        stats["rune_opens"], stats["rune_done"] = got[0], got[1]
     now = todo._now()
     page = rows[offset:offset + PAGE]
     items = [{**todo._card(r, now), "done_at": r["done_at"], "created_at": r["created_at"], "days": _days(r)} for r in page]

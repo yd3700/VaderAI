@@ -122,7 +122,10 @@ def _can_default(name: str) -> bool:
 def _usage(name: str) -> dict | None:
     """구독 사용량 — Codex 만 공식 수단으로 읽는다. 못 읽으면 None(화면은 '—'). Claude Code 는 안내만."""
     if name == "claude_console":
-        return {"windows": None, "note": "Claude Code 에서 /usage 로 볼 수 있어요"}
+        from vader.core.ocr import console
+        windows, seen = console.claude_limits()
+        return {"windows": windows, "seen": seen or None,
+                "note": "" if windows else "이 앱에서 한 번 부르면 보여요 · Claude Code 에서 /usage 로도 볼 수 있어요"}
     if name != "codex_console":
         return None
     from vader.core.ocr import console

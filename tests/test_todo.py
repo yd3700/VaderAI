@@ -158,3 +158,30 @@ def test_a_withdrawn_shared_card_takes_its_local_rune_link_with_it(isolated_sett
     assert todo.receive_share("owner-1", todo.SHARE_MARK + json.dumps({"op": "unshare", "id": "s1"}))
     assert todo.rune_links() == {}
     assert todo._db().execute("SELECT count(*) FROM card_runes").fetchone()[0] == 0
+
+
+def test_rune_opens_are_counted_on_this_pc_and_shown_as_numbers_in_the_archive(isolated_settings):
+    """룬 연결 효과 재기 (2026-11-27) — 연결된 카드의 [룬 열기] 만 세고, 완료 기록 통계에는 숫자만."""
+    from vader.core import todo_archive
+    linked, plain = todo.add("TEST 연결된 일"), todo.add("TEST 그냥 일")
+    todo.link_rune(linked["id"], "rune-test-k3")
+    assert todo.rune_opened(linked["id"], "rune-test-k3") and todo.rune_opened(linked["id"], "rune-test-k3")
+    assert not todo.rune_opened(plain["id"], "rune-test-k3"), "연결 없는 카드는 세지 않는다"
+    assert not todo.rune_opened(linked["id"], "다른-룬"), "화면이 연 룬과 지금 연결이 다르면 안 센다"
+    todo.done(linked["id"])
+    todo.done(plain["id"])
+    todo.link_rune(linked["id"], "")                       # 끝낸 뒤 연결을 풀어도 지난 숫자는 그대로
+    day = datetime.now().date().isoformat()
+    stats = todo_archive.archive(day, day)["stats"]
+    assert stats["rune_opens"] == 2 and stats["rune_done"] == 1
+    later = todo.add("TEST 나중에 연결")
+    todo.done(later["id"])
+    todo.link_rune(later["id"], "rune-test-k3")            # 끝낸 뒤 연결해도 늘지 않는다
+    assert todo_archive.archive(day, day)["stats"]["rune_done"] == 1
+    todo.done(later["id"], undo=True)                      # 센 적 없는 끝냄을 되돌려도 숫자는 그대로
+    assert todo_archive.archive(day, day)["stats"]["rune_done"] == 1
+    todo.done(later["id"])                                 # 이제 연결된 채 끝냄 → 2, 되돌리면 → 1
+    assert todo_archive.archive(day, day)["stats"]["rune_done"] == 2
+    todo.done(later["id"], undo=True)
+    assert todo_archive.archive(day, day)["stats"]["rune_done"] == 1
+    assert "rune-test-k3" not in repr(todo._db().execute("SELECT * FROM rune_daily").fetchall())

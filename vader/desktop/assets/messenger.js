@@ -200,7 +200,9 @@ function assistToggle(conv){
  // 가장 최근 조회만 반영한다 — 대화를 옮기거나 AI 를 바꾼 뒤 늦게 온 옛 답이 이름·상태를 덮지 않게 (codex1 회신 3 #2)
  if(ms.assist==null){const seq=ms.assistSeq=(ms.assistSeq||0)+1;ms.assist=[];ms.assistReady=false;
   ms.assistFailed=false;
-  Promise.all([api('messenger_assist'),api('todo_ai_target')]).then(([on,t])=>{if(seq!==ms.assistSeq)return;ms.assist=Array.isArray(on)?on:[];ms.assistAi=t?.label||'';ms.assistReady=true;draw();})
+  // 1:1 이면 '받은 글도' 의 양쪽 허용을 서버에 같이 묻는다 (2026-11-27 — 서버에서 확인)
+  const peer=conv.startsWith('dm:')?conv.slice(3):null;ms.assistRecv=null;
+  Promise.all([api('messenger_assist'),api('todo_ai_target'),peer?api('messenger_assist_recv',{account_id:peer}):null]).then(([on,t,rv])=>{if(seq!==ms.assistSeq)return;ms.assist=Array.isArray(on)?on:[];ms.assistAi=t?.label||'';ms.assistRecv=rv||null;ms.assistReady=true;draw();})
    .catch(()=>{if(seq!==ms.assistSeq)return;ms.assistFailed=true;draw();});}   // 실패는 '확인 못 함' + [다시 확인] (codex1 회신 4 #2)
  const on=ms.assist.includes(conv),box=el('div','msg-assist');
  const b=btn('비서에게 내 글 보여주기','assist','msg-assist-switch',{conv});
@@ -208,6 +210,21 @@ function assistToggle(conv){
  b.setAttribute('role','switch');b.setAttribute('aria-checked',String(on));const k=el('span','toggle');k.setAttribute('aria-hidden','true');k.append(el('span'));b.append(k);
  if(ms.assistFailed)box.append(el('p','chat-note warn','비서 허용 상태를 확인하지 못했어요.'),btn('다시 확인','assistRetry','text-button'));
  box.append(b,el('p','chat-note',VaderI18n.t('켜면 이 대화에서 앞으로 내가 보내는 글만(받은 글은 빼고) 할 일 [비서에게 묻기] 를 누를 때 {0} 로 가요. 보낸 뒤에는 되돌릴 수 없어요.',ms.assistAi||VaderI18n.word('연결된 AI'))));
+ // 두 번째 단계 — 받은 글도(서로 허용). 서버에 묻지 못했으면 꺼짐으로 확정하지 않고 '확인 못 함' + [다시 확인]·[받은 글 끄기]
+ // 끄는 중(서버에 아직 안 닿음)이면 '내 글' 을 꺼도 그 안내를 보인다 (codex1 next4 회신 3 #2)
+ const rv=ms.assistRecv;
+ if(conv.startsWith('dm:')&&rv){
+  if(rv.pending)box.append(el('p','chat-note warn',VaderI18n.word('끄는 중이에요 · 서버에 닿으면 상대 쪽에서도 꺼져요')));
+  if(on&&rv.unknown){
+   box.append(el('p','chat-note warn',VaderI18n.word('받은 글 허용 상태를 확인하지 못했어요.')),btn('다시 확인','assistRetry','text-button'),btn('받은 글 끄기','assistRecvOff','text-button',{conv}));
+  }else if(on){
+   const r=btn('받은 글도 함께 (서로 허용)','assistRecv','msg-assist-switch',{conv});r.setAttribute('role','switch');r.setAttribute('aria-checked',String(!!rv.mine));
+   const k2=el('span','toggle');k2.setAttribute('aria-hidden','true');k2.append(el('span'));r.append(k2);
+   box.append(r,el('p','chat-note',VaderI18n.t('서로 허용이에요. 켜면 상대도 내가 보낸 글을 상대가 고른 AI 에 넣을 수 있어요. 두 사람이 모두 켠 뒤의 글만 각자의 할 일 제안·답장 초안에 쓰이고, 내 쪽에서는 {0} 로 가요.',ms.assistAi||VaderI18n.word('연결된 AI'))));
+   if(!rv.pending)box.append(el('p','chat-note'+(rv.mine&&rv.theirs?'':' muted'),rv.mine&&rv.theirs?VaderI18n.word('두 사람 모두 켰어요'):rv.theirs?VaderI18n.word('상대는 켰어요 · 나도 켜면 받은 글도 가요'):VaderI18n.word('상대가 아직 안 켰어요 · 그 전에는 받은 글이 안 가요')));
+   if(rv.mine&&rv.theirs&&!rv.pending)box.append(btn('답장 초안','replyDraft','button ghost msg-draft',{conv}));
+  }
+ }
  return box;
 }
 function drawRoom(r){
@@ -386,6 +403,8 @@ function bubble(m,room=false){
  const note=STATES[m.state]&&m.text!=null?STATES[m.state]:room?roomMeta(m):!m.outgoing&&m.state==='received'&&!m.trusted?'안전 번호 확인 전에 받음':'';
  d.append(el('small','msg-meta',(note?VaderI18n.word(note)+' · ':'')+new Date(m.at*1000).toLocaleTimeString(VaderI18n.lang==='en'?'en-US':'ko-KR',{hour:'2-digit',minute:'2-digit'})));
  if(room&&m.outgoing&&m.state==='failed'&&m.text!=null)d.append(btn('다시 보내기','roomResend','text-button msg-resend',{id:m.id}));
+ // [할 일로] (2026-11-27, codex2 llm-node-hub §5 B) — 할 일 입력칸을 **빈 칸으로** 연다. 본문을 옮겨 적지 않는다(사람이 자기 말로)
+ if(m.text!=null&&!m.text.startsWith(SHARE))d.append(btn('할 일로','toTodo','text-button msg-to-todo'));
  return d;
 }
 const NOTE_ONE='Enter 보내기 · Shift+Enter 줄바꿈 · 두 PC 사이에서만 풀리게 암호화돼요. 환자 정보는 보내지 마세요.',
@@ -454,8 +473,22 @@ async function act(b){
   return;}
  if(m==='safety'){const peer=ms.peer,ep=ms.epoch;try{const s=await api('messenger_safety',{account_id:peer});if(ep===ms.epoch){ms.safety={peer,number:s.number,open:true};draw();}}catch(e){status(e.message,true);}return;}
  if(m==='safetyClose'){ms.safety=null;return draw();}
+ // 메신저를 닫고 할 일 화면이 준비되면 입력칸에 포커스만 — 본문은 옮기지 않고, 이미 적어 둔 초안도 지우지 않는다 (codex1 next4 ④)
+ if(m==='toTodo'){open(false,false);location.hash='todo';const ready=n=>{const t=document.getElementById('todoTitle');if(t){t.focus();return;}if(n<50)setTimeout(()=>ready(n+1),100);};ready(0);return;}
  if(m==='assistRetry'){ms.assist=null;return draw();}
- if(m==='assist'){const on=b.getAttribute('aria-checked')!=='true';try{const got=await call('messenger_assist_set',{conv:b.dataset.conv,on});ms.assist=Array.isArray(got)?got:[];draw();$('.msg-assist-switch',stream)?.focus();status(on?'켰어요. 이제부터 보내는 내 글만 비서에게 가요.':'껐어요. 다음 묻기부터 이 대화의 글은 안 가요.',false,true);}catch(e){}return;}
+ if(m==='assistRecv'||m==='assistRecvOff'){const on=m==='assistRecv'&&b.getAttribute('aria-checked')!=='true',ep=ms.epoch,seq=ms.assistSeq;
+  // 누른 대화·순번을 붙잡는다 — 그 사이 다른 대화로 옮겼으면 이 응답은 지금 스위치에 넣지 않는다 (codex1 next4 회신 4 #3)
+  try{const got=await call('messenger_assist_recv_set',{account_id:b.dataset.conv.slice(3),on});if(ep!==ms.epoch||seq!==ms.assistSeq)return;ms.assistRecv=got;draw();$('.msg-assist-switch[data-m=assistRecv]',stream)?.focus();
+   status(got?.pending?'끄는 중이에요 · 서버에 닿으면 상대 쪽에서도 꺼져요':got?.mine?'받은 글도 켰어요. 상대도 켜야 받은 글이 가요.':'받은 글은 이제 안 가요.',!!got?.pending,true);}catch(e){}return;}   // 문구는 요청이 아니라 확정된 응답값으로
+ // 답장 초안 — 누른 대화·그때의 입력을 붙잡고, 답이 올 때 대화가 바뀌었거나 새로 적은 글이 있으면 넣지 않는다. 보내기는 사람이
+ if(m==='replyDraft'){const ep=ms.epoch,was=input.value;if(was.trim()){status('입력칸에 적은 글이 있어요. 비운 뒤 다시 눌러 주세요.',true);input.focus();return;}status('초안을 쓰는 중…');
+  try{const got=await api('assist_reply_draft',{account_id:b.dataset.conv.slice(3)});
+   if(ep!==ms.epoch)return;if(input.value!==was){status('새로 적은 글이 있어 초안을 넣지 않았어요.',true);return;}
+   input.value=got.draft;input.focus();syncCompose();status('초안을 넣었어요 · 고친 뒤 직접 보내세요');}
+  catch(e){if(ep===ms.epoch)status(e.message,true);}return;}
+ if(m==='assist'){const on=b.getAttribute('aria-checked')!=='true',ep=ms.epoch,seq=ms.assistSeq;try{const got=await call('messenger_assist_set',{conv:b.dataset.conv,on});if(ep!==ms.epoch||seq!==ms.assistSeq)return;ms.assist=Array.isArray(got)?got:[];
+   if(b.dataset.conv.startsWith('dm:')){api('messenger_assist_recv',{account_id:b.dataset.conv.slice(3)}).then(rv=>{if(ep===ms.epoch&&seq===ms.assistSeq){ms.assistRecv=rv;draw();}}).catch(()=>{});}
+   draw();$('.msg-assist-switch',stream)?.focus();status(on?'켰어요. 이제부터 보내는 내 글만 비서에게 가요.':'껐어요. 다음 묻기부터 이 대화의 글은 안 가요.',false,true);}catch(e){}return;}
  if(m==='verify'){
   // 화면에 그린 그 상대·그 번호로만 확인한다
   if(!b.dataset.number||id!==ms.peer)return;

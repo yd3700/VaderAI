@@ -191,8 +191,44 @@ class Server:
         self.sent[(dev, b["client_id"])] = (mid, digest)
         self.inbox.append({"id": mid, "sender_account": who["account"], "sender_device": dev,
                            "recipient_device": b["recipient_device"], "kind": b["kind"], "body": b["body"],
-                           "generation": b["generation"]})
+                           "generation": b["generation"], "created_at": self._now(),
+                           **({"assist_epoch": b["assist_epoch"]} if b.get("assist_epoch") else {})})
         return {"id": mid, "duplicate": False}
+
+    def _now(self):
+        from datetime import datetime, timezone
+        self.clock = getattr(self, "clock", 0) + 1          # 서버 시각 — 부를 때마다 1초씩 (같은 초에 몰리지 않게)
+        return datetime.fromtimestamp(1_800_000_000 + self.clock, timezone.utc).isoformat()
+
+    # 비서에게 받은 글까지 (2026-11-27) — 서버는 방향별 켜짐·since(서버 시각)·관계 번호만
+    def post_assist_set(self, who, b):
+        pair = frozenset((who["account"], b["account_id"]))
+        f = self.friends.get(pair)
+        self.assist = getattr(self, "assist", {})
+        key = (who["account"], b["account_id"])
+        if b["on"]:
+            if not f or f["state"] != "accepted":
+                refuse(403, "친구에게만")
+            if self.assist.get(key, {}).get("gen") != f["generation"]:
+                self.assist[key] = {"gen": f["generation"], "since": self._now()}
+        else:
+            self.assist.pop(key, None)
+        return self.post_assist_status(who, b)
+
+    def post_assist_revoke(self, who, b):
+        if getattr(self, "revoke_down", False):
+            refuse(None, "웹에 연결하지 못했습니다.")
+        getattr(self, "assist", {}).pop((who["account"], b["account_id"]), None)
+        return self.post_assist_status(who, b)
+
+    def post_assist_status(self, who, b):
+        f = self.friends.get(frozenset((who["account"], b["account_id"])))
+        if not f or f["state"] != "accepted":
+            return {"generation": None, "mine": None, "theirs": None}
+        got = getattr(self, "assist", {})
+        pick = lambda k: got[k]["since"] if k in got and got[k]["gen"] == f["generation"] else None  # noqa: E731
+        return {"generation": f["generation"], "mine": pick((who["account"], b["account_id"])),
+                "theirs": pick((b["account_id"], who["account"]))}
 
     def post_features(self, who, b):
         self.devices[self._bound(who)]["features"] = list(b["features"])
@@ -1095,7 +1131,7 @@ def test_only_my_sent_plain_messages_in_switched_on_chats_reach_the_assistant(ta
     monkeypatch.setattr(todo_ai, "resolve", lambda role: Assignment("fake", None, True))
     monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: Fake())
     got = todo_ai.propose("이번 주 할 일 정리해줘")
-    assert got["mine"] == {"convs": 2, "messages": 2}
+    assert got["mine"] == {"convs": 2, "messages": 2, "received": 0}
     blob = sent[0]
     assert "MINE-내일까지 견적서" in blob and "MINE-ROOM-회의록" in blob
     for bad in ("OLD-BEFORE-ON", "MINE-SHARE", "THEIRS", "QUEUED", "ROOM-OFF", dara, gana, "room-1"):
@@ -1142,3 +1178,382 @@ def test_an_assist_table_from_the_previous_build_migrates_and_its_old_dm_permiss
     assert messenger.assist_set("room:room-old", True) == [f"dm:{dara}", "room:room-old"]
     messenger.friends()
     assert messenger.assist_list() == [f"dm:{dara}", "room:room-old"], "새로 켠 것은 다음에 열어도 그대로"
+
+
+
+def test_received_messages_reach_the_assistant_only_while_both_sides_allow_it_on_the_server(talking, monkeypatch):
+    """받은 글 (2026-11-27 마스터 결정 — 서버에서 확인). 양쪽 모두 켠 뒤 서버에 도착한 상대 글만. 상대가 끄면 다음 묻기부터,
+    기다리는 사이 끄면 그 묻기도 안 보낸다. 동의 전에 보낸 글이 뒤늦게 받아져도 안 간다. 관계가 바뀌면 무효."""
+    from vader.core import todo_ai
+    from vader.core.ocr import console
+    from vader.core.ocr.assign import Assignment
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    be("dara")
+    messenger.send(gana, "THEM-BEFORE-동의 전에 보낸 글")          # gana 가 아직 안 받았다
+    be("gana")
+    messenger.assist_set(f"dm:{dara}", True)
+    with pytest.raises(messenger.MessengerError):
+        messenger.recv_set(people["dara"]["account"] + "x", True)    # '내 글' 이 안 켜진 대화
+    assert messenger.recv_set(dara, True)["theirs"] is None           # 상대는 아직
+    messenger.sync()                                                  # 동의 전에 보낸 글이 이제 도착
+    be("dara")
+    server.fail_on = "send"                                           # dara 가 오프라인 — 보낼 통에만 들어간다
+    messenger.send(gana, "THEM-QUEUED-동의 전에 써 둔 글")
+    messenger.assist_set(f"dm:{gana}", True)
+    messenger.recv_set(gana, True)
+    messenger.sync()                                                  # 동의 뒤에 처음 올라간다 — 서버 시각은 since 보다 뒤
+    messenger.send(gana, "THEM-AFTER-금요일까지 견적서 부탁드려요")
+    be("gana")
+    messenger.sync()
+    sent = []
+
+    class Fake:
+        def supports(self, role):
+            return True
+
+        def chat(self, messages):
+            console._still_ok()
+            sent.append(json.dumps(messages, ensure_ascii=False))
+            return json.dumps({"changes": [], "note": ""})
+    monkeypatch.setattr(todo_ai, "resolve", lambda role: Assignment("fake", None, True))
+    monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: Fake())
+    got = todo_ai.propose("정리해줘")
+    assert got["mine"]["received"] == 1
+    assert "THEM-AFTER" in sent[0] and "THEM-BEFORE" not in sent[0] and dara not in sent[0]
+    assert "THEM-QUEUED" not in sent[0], "보낼 통에 넣을 때 동의 기간이 없던 글은 빠진다"
+
+    class Drafter(Fake):
+        def chat(self, messages):
+            sent.append(json.dumps(messages, ensure_ascii=False))
+            return "  네, 금요일까지 보내드릴게요.  "
+    monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: Drafter())
+    before = len(messenger.history(dara))
+    assert todo_ai.reply_draft(dara) == {"draft": "네, 금요일까지 보내드릴게요."}
+    assert len(messenger.history(dara)) == before, "초안은 보내지도 저장하지도 않는다"
+    sent.pop()
+
+    class LateWithdraw(Fake):
+        def chat(self, messages):
+            be("dara")
+            messenger.recv_set(gana, False)                            # 초안을 쓰는 사이 상대가 껐다
+            be("gana")
+            return "늦은 초안"
+    monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: LateWithdraw())
+    with pytest.raises(todo_ai.TodoAiError, match="버렸어요"):
+        todo_ai.reply_draft(dara)
+    be("dara")
+    messenger.recv_set(gana, True)
+    messenger.send(gana, "THEM-AFTER2-다시 켠 뒤의 글")                # 다시 켠 뒤 — 새 기간의 꼬리표
+    be("gana")
+    messenger.sync()
+    monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: Fake())
+
+    class Withdraw(Fake):
+        def chat(self, messages):
+            be("dara")
+            messenger.recv_set(gana, False)                            # 상대가 기다리는 사이 껐다
+            be("gana")
+            return super().chat(messages)
+    monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: Withdraw())
+    with pytest.raises(Exception, match="설정이 바뀌어"):
+        todo_ai.propose("다시")
+    assert len(sent) == 1
+    monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: Fake())
+    assert todo_ai.propose("또")["mine"]["received"] == 0 and "THEM-AFTER" not in sent[-1]
+    with pytest.raises(todo_ai.TodoAiError, match="모두"):
+        todo_ai.reply_draft(dara)                                      # 상대가 끈 뒤에는 초안도 없다
+
+    be("dara")
+    messenger.recv_set(gana, True)
+    be("gana")
+    server.friends[frozenset((dara, gana))]["generation"] += 1         # 관계가 다시 맺어졌다
+    assert todo_ai.propose("또또")["mine"]["received"] == 0
+    messenger.assist_set(f"dm:{dara}", False)                          # '내 글' 을 끄면 서버의 '받은 글도' 도 꺼진다
+    assert (gana, dara) not in getattr(server, "assist", {})
+
+
+
+def test_a_revoke_that_cannot_reach_the_server_turns_off_here_now_and_is_retried(talking):
+    """끄기가 서버에 못 닿아도 내 쪽은 바로 꺼지고 '끄는 중' 으로 보인다. 다음 sync 에 다시 보내 상대 쪽 확인에서도 꺼진다 (codex1 next4 회신 2 #1)."""
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    be("gana")
+    messenger.assist_set(f"dm:{dara}", True)
+    assert messenger.recv_set(dara, True)["mine"]
+    server.revoke_down = True                                          # 끄기가 서버에 계속 못 닿는다
+    got = messenger.recv_set(dara, False)
+    assert got["pending"] and got["mine"] is None                     # 내 쪽은 꺼짐, 상대 쪽 철회는 대기
+    be("dara")
+    assert messenger.recv_status(gana)["theirs"], "아직 서버에 남아 있다 — 그래서 다시 보내야 한다"
+    be("gana")
+    with pytest.raises(messenger.MessengerError, match="닿지 않았"):
+        messenger.recv_set(dara, True)                                 # 끄기가 안 닿은 채 다시 켜지 않는다
+    server.revoke_down = False
+    messenger.sync()                                                   # 다시 보낸다
+    assert messenger.recv_status(dara)["pending"] is False
+    be("dara")
+    assert messenger.recv_status(gana)["theirs"] is None
+
+
+def test_a_message_queued_before_the_receiver_switched_on_never_reaches_their_assistant(talking, monkeypatch):
+    """보낸 사람만 켠 채 오프라인으로 써 둔 글이 받는 사람이 켠 뒤 올라가도 빠진다 — 꼬리표는 두 사람 모두 켠 기간일 때만 (codex1 next4 회신 3 #1)."""
+    from vader.core import todo_ai
+    from vader.core.ocr.assign import Assignment
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    be("dara")
+    messenger.assist_set(f"dm:{gana}", True)
+    messenger.recv_set(gana, True)                                    # dara 만 켰다
+    server.fail_on = "send"
+    messenger.send(gana, "THEM-ONESIDED-받는 사람이 켜기 전에 써 둔 글")
+    be("gana")
+    messenger.assist_set(f"dm:{dara}", True)
+    messenger.recv_set(dara, True)                                    # gana 가 뒤늦게 켠다
+    be("dara")
+    messenger.sync()                                                  # 이제 올라간다
+    be("gana")
+    messenger.sync()
+    sent = []
+
+    class Fake:
+        def supports(self, role):
+            return True
+
+        def chat(self, messages):
+            sent.append(json.dumps(messages, ensure_ascii=False))
+            return json.dumps({"changes": [], "note": ""})
+    monkeypatch.setattr(todo_ai, "resolve", lambda role: Assignment("fake", None, True))
+    monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: Fake())
+    assert todo_ai.propose("정리")["mine"]["received"] == 0 and "THEM-ONESIDED" not in sent[0]
+    be("dara")
+    messenger.recv_status(gana)                                       # 이제 두 사람 기간을 안다 — 다음 글부터 꼬리표
+    messenger.send(gana, "THEM-BOTH-두 사람이 켠 뒤의 글")
+    be("gana")
+    messenger.sync()
+    assert todo_ai.propose("정리")["mine"]["received"] == 1 and "THEM-BOTH" in sent[1]
+
+
+def test_a_late_status_answer_cannot_bring_back_a_tag_after_turning_off(talking, monkeypatch):
+    """상태 조회가 도는 사이 끄면 늦은 답은 꼬리표를 되살리지 않는다 (codex1 next4 회신 3 #3)."""
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    for me_, other in (("dara", gana), ("gana", dara)):
+        be(me_)
+        messenger.assist_set(f"dm:{other}", True)
+        messenger.recv_set(other, True)
+    be("gana")
+    messenger.recv_status(dara)
+    real = server.post_assist_status
+
+    def slow(who, b):                       # 답이 오기 전에 사람이 껐다(서버 삭제는 실패)
+        before = real(who, b)
+        monkeypatch.setattr(server, "post_assist_status", real)   # 한 번만
+        server.revoke_down = True
+        messenger.recv_set(dara, False)
+        return before
+    monkeypatch.setattr(server, "post_assist_status", slow)
+    messenger.recv_status(dara)
+    monkeypatch.setattr(server, "post_assist_status", real)
+    with messenger._one() as con:
+        assert con.execute("SELECT count(*) FROM assist_epoch").fetchone()[0] == 0
+
+
+def test_a_late_status_answer_after_a_successful_turn_off_stops_the_send(talking, monkeypatch):
+    """조회가 도는 사이 끄고 서버 삭제까지 끝나도, 그 늦은 답으로 보내지 않는다 — 보내기 직전 확인이 거짓 (codex1 next4 회신 4 #1)."""
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    for me_, other in (("dara", gana), ("gana", dara)):
+        be(me_)
+        messenger.assist_set(f"dm:{other}", True)
+        messenger.recv_set(other, True)
+    be("dara")
+    messenger.recv_status(gana)               # 두 사람 기간을 안다 — 꼬리표가 붙는다
+    messenger.send(gana, "THEM-글")
+    be("gana")
+    messenger.sync()
+    since = messenger.assist_mine()["since"]
+    assert any(k.startswith("recv:") for k in since)
+    real = server.post_assist_status
+    calls = {"n": 0}
+
+    def slow(who, b):
+        before = real(who, b)                 # 철회 **전** 값으로 답을 만들어 두고
+        if calls["n"] == 0:
+            calls["n"] += 1
+            messenger.recv_set(dara, False)   # 답이 오기 전에 끄고, 서버 삭제도 성공
+        return before
+    monkeypatch.setattr(server, "post_assist_status", slow)
+    assert messenger.assist_still(since) is False
+
+
+def test_turning_on_then_off_while_the_on_request_is_in_flight_ends_off_on_both_pcs(talking, monkeypatch):
+    """켜기 요청이 가는 사이 끄기를 누르면, 사람이 마지막에 고른 '끄기' 로 서버가 맞춰진다 (codex1 next4 회신 4 #2)."""
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    be("gana")
+    messenger.assist_set(f"dm:{dara}", True)
+    real = server.post_assist_set
+
+    def slow(who, b):
+        got = real(who, b)
+        with messenger._one() as con, messenger._tx(con):   # 그 사이 다른 스레드에서 '끄기' 를 눌렀다(로컬 기록 — 서버 보내기는 차례를 기다린다)
+            con.execute("DELETE FROM assist_perm WHERE conv=?", (f"dm:{dara}",))
+            messenger._revoke_in(con, dara)
+        return got
+    monkeypatch.setattr(server, "post_assist_set", slow)
+    got = messenger.recv_set(dara, True)
+    assert got["mine"] is None
+    monkeypatch.setattr(server, "post_assist_set", real)
+    assert messenger.recv_status(dara)["mine"] is None and not messenger.recv_status(dara)["pending"]
+    be("dara")
+    assert messenger.recv_status(gana)["theirs"] is None, "상대 PC 에서도 꺼짐"
+
+
+def test_an_on_request_waiting_for_its_turn_is_dropped_if_turned_off_meanwhile(talking):
+    """켜기가 서버 보내기 차례를 기다리는 사이 끄기·철회가 끝났으면, 그 켜기는 보내지 않는다 (codex1 next4 회신 5 #1)."""
+    import threading
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    be("gana")
+    messenger.assist_set(f"dm:{dara}", True)
+    out = []
+    messenger._ASSIST_NET.acquire()                      # 다른 일이 서버 보내기 차례를 쥐고 있다
+    worker = threading.Thread(target=lambda: out.append(messenger.recv_set(dara, True)))
+    worker.start()
+    import time as _t
+    _t.sleep(0.3)                                        # 켜기는 접수됐고 차례를 기다린다
+    with messenger._one() as con, messenger._tx(con):    # 그 사이 '내 글' 을 껐다(로컬 기록)
+        con.execute("DELETE FROM assist_perm WHERE conv=?", (f"dm:{dara}",))
+        messenger._revoke_in(con, dara)
+    messenger._ASSIST_NET.release()
+    worker.join(10)
+    messenger.flush_revokes()
+    assert out and out[0]["mine"] is None and out[0].get("cancelled")
+    assert (gana, dara) not in getattr(server, "assist", {}), "서버에 켜짐이 다시 생기지 않았다"
+    be("dara")
+    assert messenger.recv_status(gana)["theirs"] is None
+
+
+def test_turning_off_another_chat_does_not_cancel_this_chats_turn_on(talking, monkeypatch):
+    """버전은 상대별 — B 를 끈 것이 A 의 켜기를 취소하지 않는다 (codex1 next4 회신 5 #2)."""
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    other = "00000000-0000-4000-8000-0000000000b2"
+    be("gana")
+    messenger.assist_set(f"dm:{dara}", True)
+    real = server.post_assist_set
+
+    def slow(who, b):
+        got = real(who, b)
+        with messenger._one() as con, messenger._tx(con):   # A(dara) 켜기 응답을 기다리는 사이 B 를 껐다
+            messenger._revoke_in(con, other)
+        return got
+    monkeypatch.setattr(server, "post_assist_set", slow)
+    got = messenger.recv_set(dara, True)
+    assert got["mine"], "A 의 켜기는 그대로"
+    assert (gana, dara) in server.assist
+
+
+def test_on_off_on_overlapping_keeps_the_last_on(talking, monkeypatch):
+    """켜기 응답을 기다리는 사이 끄기 → 다시 켜기를 차례로 누르면, 마지막 켜기가 두 PC 에서 남는다 (codex1 next4 회신 6)."""
+    import threading
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    be("gana")
+    messenger.assist_set(f"dm:{dara}", True)
+    real, gate, entered, out = server.post_assist_set, threading.Event(), threading.Event(), []
+
+    def held(who, b):                                  # 첫 켜기의 서버 응답을 붙잡는다
+        got = real(who, b)
+        entered.set()
+        gate.wait(10)
+        return got
+    monkeypatch.setattr(server, "post_assist_set", held)
+    first = threading.Thread(target=lambda: out.append(("first", messenger.recv_set(dara, True))))
+    first.start()
+    entered.wait(10)
+    monkeypatch.setattr(server, "post_assist_set", real)
+    with messenger._one() as con, messenger._tx(con):  # 끄기(사람의 선택 — 로컬 기록, 서버 보내기는 차례를 기다림)
+        messenger._revoke_in(con, dara)
+    last = threading.Thread(target=lambda: out.append(("last", messenger.recv_set(dara, True))))
+    last.start()
+    import time as _t
+    _t.sleep(0.3)
+    gate.set()
+    first.join(10), last.join(10)
+    final = dict(out)
+    assert final["last"]["mine"] and not final["last"].get("cancelled")
+    assert (gana, dara) in server.assist, "서버에도 마지막 켜기"
+    be("dara")
+    assert messenger.recv_status(gana)["theirs"]
+
+
+def test_a_turn_off_made_right_after_the_check_survives_a_lost_turn_on_reply(talking, monkeypatch):
+    """켜기 검사 직후 끄기가 접수되고 켜기 응답까지 유실돼도, 철회 기록이 남아 다시 보내져 상대 PC 에서 꺼진다 (codex1 next4 회신 7)."""
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    be("gana")
+    messenger.assist_set(f"dm:{dara}", True)
+    real = server.post_assist_set
+
+    def lost(who, b):
+        real(who, b)                                     # 서버엔 켜졌다
+        with messenger._one() as con, messenger._tx(con):    # 그 사이 사람이 껐다(로컬 기록)
+            con.execute("DELETE FROM assist_perm WHERE conv=?", (f"dm:{dara}",))
+            messenger._revoke_in(con, dara)
+        server.revoke_down = True                        # 철회도 지금은 못 닿는다
+        refuse(None, "웹에 연결하지 못했습니다.")          # 그리고 켜기 응답이 유실됐다
+    monkeypatch.setattr(server, "post_assist_set", lost)
+    with pytest.raises(Exception):
+        messenger.recv_set(dara, True)
+    monkeypatch.setattr(server, "post_assist_set", real)
+    assert messenger._pending(dara), "철회 기록이 남아 있다"
+    server.revoke_down = False
+    messenger.sync()                                     # 다시 보낸다
+    assert not messenger._pending(dara)
+    be("dara")
+    assert messenger.recv_status(gana)["theirs"] is None
+
+
+def test_a_turn_off_that_lands_while_old_revokes_are_flushed_cancels_the_waiting_turn_on(talking, monkeypatch):
+    """켜기가 차례를 얻은 뒤 남은 철회를 서버에 보내는 동안 사람이 끄면, 그 끄기까지 서버에 간 뒤에도 옛 켜기는 보내지 않는다 (codex1 next4 회신 8·9).
+    철회 기록은 켜기가 입구 검사를 지난 **뒤에** 생긴다 — 그래서 잠금 안의 철회 보내기에서 끄기가 일어난다."""
+    import threading
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    be("gana")
+    messenger.assist_set(f"dm:{dara}", True)
+    real_revoke, real_set, sets, out = server.post_assist_revoke, server.post_assist_set, [], []
+
+    def revoke_and_user_off(who, b):
+        with messenger._one() as con, messenger._tx(con):   # 그 철회를 서버에 보내는 사이 사람이 껐다
+            con.execute("DELETE FROM assist_perm WHERE conv=?", (f"dm:{dara}",))
+            messenger._revoke_in(con, dara)
+        return real_revoke(who, b)
+    monkeypatch.setattr(server, "post_assist_revoke", revoke_and_user_off)
+    monkeypatch.setattr(server, "post_assist_set", lambda who, b: (sets.append(b), real_set(who, b))[1])
+    real_lock, waiting = messenger._ASSIST_NET, threading.Event()
+
+    class Gate:                                         # 켜기가 입구 검사(대기 없음)를 **지나** 차례를 기다리기 시작한 순간을 알린다
+        def __enter__(self):
+            if threading.current_thread() is not threading.main_thread():
+                waiting.set()
+            real_lock.acquire()
+
+        def __exit__(self, *exc):
+            real_lock.release()
+    monkeypatch.setattr(messenger, "_ASSIST_NET", Gate())
+    real_lock.acquire()                                 # 다른 보내기가 차례를 쥐고 있다
+    worker = threading.Thread(target=lambda: out.append(messenger.recv_set(dara, True)))
+    worker.start()
+    assert waiting.wait(10)                             # 부하와 상관없이 — 입구의 대기 검사가 끝난 뒤에만 다음으로
+    with messenger._one() as con:                       # 이제야 앱이 다시 적는 철회 하나(버전은 그대로)
+        con.execute("INSERT INTO assist_revoke(account) VALUES (?)", (dara,))
+    real_lock.release()
+    worker.join(10)
+    assert out and out[0].get("cancelled") and sets == [], "철회 뒤 서버 켜기 호출 0회"
+    monkeypatch.setattr(server, "post_assist_revoke", real_revoke)
+    messenger.flush_revokes()
+    be("dara")
+    assert messenger.recv_status(gana)["theirs"] is None

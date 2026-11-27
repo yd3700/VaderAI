@@ -961,7 +961,7 @@ function todoCard(c) {
 function todoRuneChip(c) {
  const id=state.todoRunes?.[c.id];if(!id)return '';
  const r=taskRunes[id];
- return r?'<button type="button" class="button ghost todo-rune" data-action="todoRuneOpen" data-rune="'+esc(id)+'" title="'+esc(T('{0} 룬 화면 열기',r.name))+'">'+icon('arrow')+'<span data-raw>'+esc(r.name)+'</span></button>'
+ return r?'<button type="button" class="button ghost todo-rune" data-action="todoRuneOpen" data-id="'+c.id+'" data-rune="'+esc(id)+'" title="'+esc(T('{0} 룬 화면 열기',r.name))+'">'+icon('arrow')+'<span data-raw>'+esc(r.name)+'</span></button>'
   :'<span class="todo-shared done-mark">'+T('룬 없음')+' · <button type="button" class="text-button" data-action="todoRuneUnlink" data-id="'+c.id+'">'+T('연결 풀기')+'</button></span>';
 }
 async function todoRuneSet(id,rune) {
@@ -997,13 +997,14 @@ function todoView() {
  const cs=state.todos,now=new Date(),today=ymd(now),due=state.todoDraft?.due||today,tab=state.todoTab||'today';
  if(cs==null)return '<section class="scene todo"><h1>할 일</h1>'+(state.todoError?'<p class="ai-bad">'+esc(state.todoError)+'</p>':'<p class="muted">불러오는 중…</p>')+'</section>';
  const open=cs.filter(c=>c.state==='open'),done=cs.filter(c=>c.state==='done'),groups={today:open.filter(c=>c.due<=today||c.ringing),next:open.filter(c=>c.due>today&&!c.ringing),all:open},shown=groups[tab]||groups.today;
- const form='<form class="todo-add" id="todoAdd">'+icon('plus')+'<label class="sr-only" for="todoTitle">할 일</label><input id="todoTitle" maxlength="500" placeholder="할 일을 적고 Enter" autocomplete="off" value="'+esc(state.todoDraft?.title||'')+'"><label class="todo-date"><span id="todoDateLabel">'+(due===today?'오늘':md(due))+'</span><input id="todoDue" aria-label="할 일 날짜" type="date" required value="'+esc(due)+'"></label><button type="submit" class="button primary">추가</button><button type="button" class="button ghost todo-ask" data-action="todoAsk"'+(todoAsk.busy?' disabled':'')+'>'+icon('chat')+'<span>'+(todoAsk.busy?'묻는 중…':'비서에게 묻기')+'</span></button></form>';
+ const form='<form class="todo-add" id="todoAdd">'+icon('plus')+'<label class="sr-only" for="todoTitle">할 일</label><input id="todoTitle" maxlength="500" placeholder="할 일을 적고 Enter" autocomplete="off" value="'+esc(state.todoDraft?.title||'')+'"><label class="todo-date"><span id="todoDateLabel">'+(due===today?'오늘':md(due))+'</span><input id="todoDue" aria-label="할 일 날짜" type="date" required value="'+esc(due)+'"></label><button type="submit" class="button primary">추가</button><button type="button" class="button ghost todo-ask" data-action="todoAsk"'+(todoAsk.busy?' disabled':'')+'>'+icon('chat')+'<span>'+(todoAsk.busy?'묻는 중…':'비서에게 묻기')+'</span></button>'
+  +(Object.keys(taskRunes).length?'<button type="button" class="button ghost todo-ask" data-action="todoAsk" data-runes="1"'+(todoAsk.busy?' disabled':'')+' title="'+esc(T('설치된 룬 이름을 {0} 로 보내 카드에 맞는 룬을 추천받아요',state.todoAiTarget||T('연결된 AI')))+'">'+icon('match')+'<span>'+T('룬 추천')+'</span></button>':'')+'</form>';
  return '<section class="scene todo"><div class="todo-heading"><div><h1>할 일</h1><p class="todo-today">'+now.toLocaleDateString(VaderI18n.lang==='en'?'en-US':'ko-KR',{month:'long',day:'numeric',weekday:'long'})+'</p></div><div class="todo-tools"><details class="todo-menu"><summary aria-label="할 일 화면 더보기">'+todoMoreIcon()+'</summary><div class="todo-menu-items"><button type="button" data-action="phoneOpen">폰에서 보기</button><button type="button" data-action="todoPrivacy">저장·전송 안내</button></div></details></div></div>'
   +'<div class="todo-bar"><nav class="todo-tabs" aria-label="할 일 목록">'+[['today','오늘'],['next','예정'],['all','전체'],['archive','완료 기록']].map(([k,label])=>'<button id="todo-tab-'+k+'" type="button" data-action="todoTab" data-tab="'+k+'" aria-pressed="'+(tab===k)+'">'+label+(groups[k]?' <span>'+groups[k].length+'</span>':'')+'</button>').join('')+'</nav>'+todoMemberPick()+'</div>'
   +(state.todoError?'<p class="ai-bad" role="alert">'+esc(state.todoError)+'</p>':'')
   +(tab==='archive'?archiveView():(shown.length?'<ul class="todo-list" aria-label="'+T('{0} 할 일',T({today:'오늘',next:'예정',all:'전체'}[tab]))+'">'+shown.map(todoCard).join('')+'</ul>':'<p class="muted todo-empty">'+(tab==='next'?'예정된 할 일이 없어요.':open.length?'오늘 할 일을 모두 마쳤어요.':'할 일이 없어요. 위 칸에 적고 Enter 를 누르세요.')+'</p>')
   +'<details id="todoCompleted" class="todo-completed"'+(state.todoCompleted?' open':'')+'><summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>오늘 완료 <span>'+done.length+'</span></summary>'+(done.length?'<ul class="todo-list">'+done.map(todoCard).join('')+'</ul>':'<p class="muted">아직 완료한 일이 없어요.</p>')+'</details>')
-  +todoFeedView()+form+'<p class="muted todo-note">'+T('Enter 는 이 PC 에만 추가해요. [비서에게 묻기]를 누르면 적은 말, 열린 할 일(제목·날짜·알림 시각), 메신저에서 켠 대화의 내가 보낸 글을 {0} 로 보내요. 받은 글과 끝낸 기록은 보내지 않아요.','<b data-raw>'+esc(state.todoAiTarget||T('연결된 AI'))+'</b>')+'</p></section>';
+  +todoFeedView()+form+'<p class="muted todo-note">'+T('Enter 는 이 PC 에만 추가해요. [비서에게 묻기]를 누르면 적은 말, 열린 할 일(제목·날짜·알림 시각), 메신저에서 켠 대화의 내가 보낸 글을 {0} 로 보내요. [룬 추천]은 설치된 룬 이름도 함께 보내요. 받은 글과 끝낸 기록은 보내지 않아요.','<b data-raw>'+esc(state.todoAiTarget||T('연결된 AI'))+'</b>')+'</p></section>';
 }
 // 세부 포스트잇 (마스터 요청 2026-11-18) — 카드 제목을 누르면 열린다. 적는 칸 + 하위 항목. 항목을 누르면 그 안으로(드릴다운),
 // 위 경로를 누르면 밖으로(드릴업). 3단까지. 적은 내용은 손을 멈추면 저장한다 — 다시 그리지 않아 적던 자리가 그대로다.
@@ -1055,7 +1056,7 @@ async function noteSave() {
 document.addEventListener('input',e=>{if(e.target.id==='noteBody'){clearTimeout(noteTimer);noteTimer=setTimeout(noteSave,700);}});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&state.note&&e.target.closest?.('#todoNote')){e.preventDefault();noteFold();}});
 // 말로 정리 (2026-11-11 마스터 결정) — AI 는 제안만, [적용] 을 눌러야 바뀐다. 보내는 범위는 화면에 그대로 적는다.
-const opWord=c=>c.op==='add'?T('추가')+' · '+raw(c.title)+' · '+md(c.due):c.op==='done'?T('끝냄')+' · '+raw(c.title):c.op==='order'?T('순서 바꾸기')+' · '+c.titles.slice(0,5).map(raw).join(' → ')+(c.titles.length>5?' …':''):T('미루기')+' · '+raw(c.title)+' → '+md(c.until)+' '+c.until.slice(11,16);
+const opWord=c=>c.op==='add'?T('추가')+' · '+raw(c.title)+' · '+md(c.due):c.op==='done'?T('끝냄')+' · '+raw(c.title):c.op==='order'?T('순서 바꾸기')+' · '+c.titles.slice(0,5).map(raw).join(' → ')+(c.titles.length>5?' …':''):c.op==='link'?T('룬 연결')+' · '+raw(c.title)+' → '+raw(c.rune_name):T('미루기')+' · '+raw(c.title)+' → '+md(c.until)+' '+c.until.slice(11,16);
 // 비서 (2026-11-26 마스터 결정 — 비서 정리 + 지난 일 묻기를 한 입력창에서). 이 화면을 연 동안만 남는다(잠그면 문으로 가며 사라진다).
 // 제안은 버튼 하나에 하나 — 누른 것만 적용, 처음엔 아무것도 안 바뀐다 (codex1 round6 P1-3·비서 회신 2). 지난 기록은 이 PC 가 찾은 그대로.
 const suggestWord=c=>c.request?T('주인에게 끝냄 요청')+' · '+raw(c.title):opWord(c);
@@ -1084,10 +1085,12 @@ function todoFeedView() {
    +(t.plan.mine?.messages?'<p class="muted">'+T('켠 대화 {0}곳의 내 글 {1}건을 함께 보냈어요.',t.plan.mine.convs,t.plan.mine.messages)+'</p>':''))
   +'</div></section>').join('')+'</div>';
 }
-async function todoAsk() {
- const t=$('#todoTitle');if(!t?.value.trim()||todoAsk.busy||todoAdd.busy)return;
- const turn={q:t.value.trim(),busy:true,done:[]};state.todoFeed=[...(state.todoFeed||[]),turn].slice(-20);todoAsk.busy=true;render();
- try{turn.plan=await api('todo_propose',{text:turn.q});const now=$('#todoTitle');   // 실패하면 적은 말은 입력창에 남는다
+async function todoAsk(a) {
+ // [룬 추천] — 이 버튼을 누른 요청에만 설치된 룬 이름이 간다 (codex1 next4 ④). 비어 있으면 기본 물음
+ const runes=!!a?.dataset?.runes,t=$('#todoTitle'),q=t?.value.trim()||(runes?T('열린 할 일에 맞는 룬을 추천해줘'):'');
+ if(!q||todoAsk.busy||todoAdd.busy)return;
+ const turn={q,busy:true,done:[]};state.todoFeed=[...(state.todoFeed||[]),turn].slice(-20);todoAsk.busy=true;render();
+ try{turn.plan=await api('todo_propose',{text:turn.q,runes});const now=$('#todoTitle');   // 실패하면 적은 말은 입력창에 남는다
   if(now&&now.value.trim()===turn.q){now.value='';state.todoDraft={...state.todoDraft,title:''};}}   // 기다리는 사이 새로 적은 말·고른 날짜는 그대로 (비서 회신 2 P2-2)
  catch(e){turn.error=e.message;}
  finally{turn.busy=false;todoAsk.busy=false;render();$('#todoTitle')?.focus();}
@@ -1096,7 +1099,7 @@ async function todoSuggest(a) {
  const t=(state.todoFeed||[])[+a.dataset.turn],i=+a.dataset.i,c=t?.plan?.changes[i];
  if(!c||t.done[i]?.busy||t.done[i]?.ok)return;   // 두 번 눌러도 한 번만
  t.done[i]={busy:true};render();
- try{const r=await api('todo_apply',{changes:[c]}),got=r.results[0];state.todos=r.cards;loadTodos.last=JSON.stringify(r.cards)+ymd(new Date());todoBadge();
+ try{const r=await api('todo_apply',{changes:[c]}),got=r.results[0];state.todos=r.cards;loadTodos.last=JSON.stringify(r.cards)+ymd(new Date());todoBadge();if(r.runes){state.todoRunes=r.runes;loadTodos.links=JSON.stringify(r.runes);}
   t.done[i]=got.ok?{ok:true}:{error:got.error};}
  catch(e){t.done[i]={error:e.message};}
  render();
@@ -1155,7 +1158,8 @@ async function loadArchive(more) {
 function archiveStats(s) {
  if(!s)return '';
  const top=Math.max(1,...s.weeks.map(w=>w.n)),tile=(n,label)=>'<div class="arch-stat"><strong>'+esc(String(n))+'</strong><span>'+label+'</span></div>';
- return '<div class="arch-stats">'+tile(s.done,T('완료'))+tile(s.snoozed,T('미룬 횟수'))+tile(s.avg_days==null?'–':T('{0}일',s.avg_days),T('평균 걸린 날'))+'</div>'
+ return '<div class="arch-stats">'+tile(s.done,T('완료'))+tile(s.snoozed,T('미룬 횟수'))+tile(s.avg_days==null?'–':T('{0}일',s.avg_days),T('평균 걸린 날'))
+  +(s.rune_opens||s.rune_done?tile(s.rune_opens,T('룬 열기'))+tile(s.rune_done,T('룬 연결 카드 완료')):'')+'</div>'
   +(s.weeks.length>1?'<figure class="arch-chart"><figcaption class="small muted">'+T('주별 완료')+'</figcaption><div class="arch-bars" role="img" aria-label="'+esc(s.weeks.map(w=>md(w.week)+' '+w.n).join(', '))+'">'+s.weeks.map(w=>'<span title="'+esc(md(w.week)+' · '+w.n)+'"><i style="height:'+Math.round(w.n/top*100)+'%"></i></span>').join('')+'</div><div class="arch-axis small muted"><span>'+esc(md(s.weeks[0].week))+'</span><span>'+esc(md(s.weeks[s.weeks.length-1].week))+'</span></div></figure>':'')
   +(s.months.length?'<p class="small muted arch-months">'+s.months.map(m=>esc(m.month.slice(2).replace('-','.'))+' · '+m.n).join('&emsp;')+'</p>':'');
 }
@@ -1350,7 +1354,8 @@ const aiWindow=w=>w===300?T('5시간'):w===10080?T('주간'):w?T('{0}분',w):'�
 function aiUsage(u) {
  if(!u)return '';
  const parts=u.windows?u.windows.map(w=>aiWindow(w.window_mins)+' '+w.used_percent+'%'+(w.resets_at?' · '+T('{0} 뒤 초기화',aiLeft(w.resets_at)):'')):['—'];
- return '<p class="small muted ai-usage">'+T('사용량')+' '+parts.join(' / ')+(u.note?' · '+T(u.note):'')+'</p>';
+ const ago=u.seen?Math.max(0,Math.round((Date.now()/1000-u.seen)/60)):null;
+ return '<p class="small muted ai-usage">'+T('사용량')+' '+parts.join(' / ')+(ago!=null?' · '+T('마지막 호출 기준 {0}분 전',ago):'')+(u.note?' · '+T(u.note):'')+'</p>';
 }
 function renderAi() {
  state.todoAiTarget=undefined;window.VaderMessenger?.aiChanged?.();   // 기본 AI 가 바뀌었을 수 있다 — 할 일 안내·메신저 스위치의 '보내는 곳' 을 다시 읽는다
@@ -1529,7 +1534,7 @@ const actions={core:()=>navigate('core'),trySamples:()=>start(taskRunes[state.ta
  retry:()=>retry(),retryPick:async()=>{const p=await api('pick');if(p.length)await retry(p);},
  promote,dismissPromote:()=>{state.dismissed.add(state.job.id);render();},
  graphHome,runSearch,todoSnooze,todoDelete,todoRunePick,
- todoRuneOpen:a=>{const id=a.dataset.rune;if(!taskRunes[id]){toast(T('룬 없음'));render();return;}state.task=id;if(taskRunes[id].locked)state.dryRun=true;navigate('runes');},
+ todoRuneOpen:a=>{const id=a.dataset.rune;if(!taskRunes[id]){toast(T('룬 없음'));render();return;}api('todo_rune_opened',{card_id:a.dataset.id,rune_id:id}).catch(()=>{});state.task=id;if(taskRunes[id].locked)state.dryRun=true;navigate('runes');},
  todoRuneUnlink:a=>todoRuneSet(a.dataset.id,''),
  todoUnshare:async a=>{const c=(state.todos||[]).find(x=>x.id===a.dataset.id),to=shareTargets().filter(x=>(c?.shared_with||[]).includes(x));if(!to.length)return;try{state.todos=await api('todo_unshare',{card_id:a.dataset.id,account_ids:to});loadTodos.last=JSON.stringify(state.todos)+ymd(new Date());render();$('[data-action="todoShare"][data-id="'+a.dataset.id+'"]')?.focus();toast('공유를 취소했어요. 받은 쪽 목록에서도 빠져요.');}catch(e){toast(e.message);}},
  todoShare:async a=>{const to=shareTargets();if(!to.length)return;try{state.todos=await api('todo_share',{card_id:a.dataset.id,account_ids:to});loadTodos.last=JSON.stringify(state.todos)+ymd(new Date());render();toast('공유했어요 ('+todoMemberName()+'). 메신저가 연결돼 있으면 바로, 아니면 연결될 때 보내요.');}catch(e){toast(e.message);}},

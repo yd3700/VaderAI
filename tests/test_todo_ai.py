@@ -15,7 +15,7 @@ def test_ai_proposes_checked_changes_and_only_applied_ones_happen(isolated_setti
     later = (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
     sent = {}
 
-    def fake_ask(text, now, open_cards, mine=None):
+    def fake_ask(text, now, open_cards, mine=None, runes=None):
         sent["titles"] = [c["title"] for c in open_cards]
         return "설명 " + json.dumps({"changes": [
             {"op": "snooze", "ref": "c1", "until": later.strftime("%Y-%m-%dT%H:%M")},
@@ -80,7 +80,7 @@ def test_a_past_question_is_looked_up_on_this_pc_and_the_records_never_reach_the
     today = datetime.now().date()
     sent = {}
 
-    def fake_ask(text, now, open_cards, mine=None):
+    def fake_ask(text, now, open_cards, mine=None, runes=None):
         sent["titles"] = [c["title"] for c in open_cards]
         return json.dumps({"changes": [], "note": "단가표를 찾아볼게요",
                            "lookup": {"start": (today - timedelta(days=7)).isoformat(), "end": (today + timedelta(days=30)).isoformat(),
@@ -133,3 +133,48 @@ def test_the_named_destination_is_the_provider_that_actually_receives_the_questi
         assert todo_ai.target() == {"label": f"label-{name}"}
         todo_ai.propose("정리해줘")
         assert got[-1] == name
+
+
+def test_the_assistant_can_suggest_a_rune_by_name_only_and_linking_happens_on_press(isolated_settings, monkeypatch):
+    """룬 추천 (2026-11-27) — AI 에는 룬 이름만(임시 번호 u1…), id 는 안 간다. 지금 설치된 룬만, 누른 것만 이 PC 에 연결."""
+    from vader.core.ocr.assign import Assignment
+    card = todo.add("TEST 명세서 정리")
+    monkeypatch.setattr(todo_ai, "installed_runes", lambda: {"rune-id-secret-1": "TEST 명세서 룬", "rune-id-2": "TEST 다른 룬"})
+    sent = []
+
+    class Fake:
+        def supports(self, role):
+            return True
+
+        def chat(self, messages):
+            sent.append(json.dumps(messages, ensure_ascii=False))
+            return json.dumps({"changes": [{"op": "link", "ref": "c1", "rune": "u1"}, {"op": "link", "ref": "c1", "rune": "u9"}], "note": ""})
+    monkeypatch.setattr(todo_ai, "resolve", lambda role: Assignment("fake", None, True))
+    monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: Fake())
+    todo_ai.propose("그냥 정리해줘")
+    assert "TEST 명세서 룬" not in sent[0], "[룬 추천] 을 누르지 않으면 룬 이름은 안 간다"
+    got = todo_ai.propose("이 카드에 맞는 룬 붙여줘", runes=True)
+    assert "TEST 명세서 룬" in sent[1] and "rune-id-secret-1" not in sent[1]
+    assert [(c["op"], c["rune_name"]) for c in got["changes"]] == [("link", "TEST 명세서 룬")] and got["skipped"] == 1
+    assert todo.rune_links() == {}, "제안만 — 아직 안 바뀜"
+    monkeypatch.setattr(todo_ai, "installed_runes", lambda: {"rune-id-2": "TEST 다른 룬"})   # 그 사이 룬을 지웠다
+    assert todo_ai.apply(got["changes"])["results"][0]["ok"] is False
+    monkeypatch.setattr(todo_ai, "installed_runes", lambda: {"rune-id-secret-1": "TEST 명세서 룬", "rune-id-2": "TEST 다른 룬"})
+    todo.link_rune(card["id"], "rune-id-2")                     # 추천을 받은 뒤 사람이 손으로 다른 룬을 연결했다
+    assert todo_ai.apply(got["changes"])["results"][0]["ok"] is False
+    assert todo.rune_links() == {card["id"]: "rune-id-2"}, "손으로 고른 연결을 옛 추천이 덮지 않는다"
+    todo.link_rune(card["id"], "")                              # 다시 풀면(추천 때와 같은 '연결 없음') 적용된다
+    r = todo_ai.apply(got["changes"])
+    assert r["results"][0]["ok"] and r["runes"] == {card["id"]: "rune-id-secret-1"}
+
+
+def test_a_rune_suggestion_is_not_applied_to_a_card_finished_in_the_meantime(isolated_settings, monkeypatch):
+    """룬 추천 적용은 쓰는 거래 안에서 카드가 열려 있고 판 번호가 같은지도 본다 (codex1 next4 회신 3 #4)."""
+    card = todo.add("TEST 끝낼 일")
+    monkeypatch.setattr(todo_ai, "installed_runes", lambda: {"rune-a": "TEST 룬"})
+    change = todo_ai.check({"op": "link", "card_id": card["id"], "mark": todo.mark(card), "rune_id": "rune-a"},
+                           {card["id"]: card}, datetime.now())
+    real = todo_ai.check
+    monkeypatch.setattr(todo_ai, "check", lambda c, by_id, now: (todo.done(card["id"]), real(c, {card["id"]: card}, now))[1])
+    got = todo_ai.apply([change])                          # 검사와 쓰기 사이에 카드가 끝났다
+    assert got["results"][0]["ok"] is False and todo.rune_links() == {}

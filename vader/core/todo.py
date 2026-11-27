@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS bodies(node TEXT PRIMARY KEY, card TEXT NOT NULL, bod
 CREATE TABLE IF NOT EXISTS share_out(id INTEGER PRIMARY KEY AUTOINCREMENT, peer TEXT NOT NULL, payload BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS share_seen(event TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS imports(key TEXT PRIMARY KEY, card TEXT NOT NULL, at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS card_runes(card TEXT PRIMARY KEY, rune TEXT NOT NULL);"""
+CREATE TABLE IF NOT EXISTS card_runes(card TEXT PRIMARY KEY, rune TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS rune_daily(day TEXT PRIMARY KEY, opens INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS rune_done_marks(card TEXT PRIMARY KEY, day TEXT NOT NULL);"""
 TITLE_MAX = 200
 #: 열쇠 확인→만들기→저장을 한 번에. 앱은 PC 에 하나만 뜬다(gate.hold_instance) — 프로세스 안 잠금이면 된다 (codex1 P1-3).
 _KEY_LOCK = threading.Lock()
@@ -182,6 +184,7 @@ def done(card_id: str, undo: bool = False, rev: str | None = None, con: sqlite3.
             flush_shares()
         return cards() if con is None else []
     _change(own, card_id, rev, "state=?, done_at=?", ("open", None) if undo else ("done", _now().isoformat()))
+    _count_done(own, card_id, undo)
     row = _one(own, card_id)
     if row["share_room"]:   # 방에 공유한 할 일 — 주인 PC 가 판정하고 상태를 방에 알린다 (방 회신 3)
         _room_state(own, row)
@@ -215,6 +218,7 @@ def delete(card_id: str) -> list[dict]:
         con.execute("DELETE FROM notes WHERE card=?", (card_id,))
         con.execute("DELETE FROM bodies WHERE card=?", (card_id,))
         con.execute("DELETE FROM card_runes WHERE card=?", (card_id,))
+        con.execute("DELETE FROM rune_done_marks WHERE card=?", (card_id,))
     return cards()
 
 
@@ -227,13 +231,58 @@ def rune_links() -> dict[str, str]:
     return {r["card"]: r["rune"] for r in _db().execute("SELECT r.card, r.rune FROM card_runes r JOIN cards c ON c.id=r.card")}
 
 
-def link_rune(card_id: str, rune_id: str = "") -> dict[str, str]:
-    """rune_id 가 비면 연결을 푼다."""
+# 룬 연결 효과 재기 (codex2 llm-node-hub §6 · codex1 next4 ④) — 이 PC 에만, **날짜별 숫자만**(카드·룬 id 를 쌓지 않는다).
+# done: 룬을 연결해 둔 채 끝낸 횟수. 되돌리면 그 끝냄을 센 날에서 뺀다(rune_done_marks — 센 카드만, 지우면 함께). 다른 PC 에서 끝낸 것은 안 센다.
+def _tally(con, what: str, n: int) -> None:
+    day = _now().date().isoformat()
+    con.execute("INSERT OR IGNORE INTO rune_daily(day) VALUES (?)", (day,))
+    con.execute(f"UPDATE rune_daily SET {what}=max(0, {what}+?) WHERE day=?", (n, day))
+
+
+def _count_done(con, card_id: str, undo: bool) -> None:
+    """끝낸 그 순간 룬이 연결돼 있었으면 센다. 되돌리면 **센 적 있는 것만** 그날 숫자에서 뺀다."""
+    if undo:
+        mark = con.execute("SELECT day FROM rune_done_marks WHERE card=?", (card_id,)).fetchone()
+        if mark:
+            con.execute("UPDATE rune_daily SET done=max(0, done-1) WHERE day=?", (mark["day"],))
+            con.execute("DELETE FROM rune_done_marks WHERE card=?", (card_id,))
+    elif con.execute("SELECT 1 FROM card_runes WHERE card=?", (card_id,)).fetchone():
+        _tally(con, "done", 1)
+        con.execute("INSERT OR REPLACE INTO rune_done_marks(card, day) VALUES (?,?)", (card_id, _now().date().isoformat()))
+
+
+def rune_opened(card_id: str, rune_id: str) -> bool:
+    """카드에서 [룬 열기] 를 눌렀다. 화면이 연 룬과 지금 연결이 같을 때만 센다 — 그 사이 연결이 바뀌면 안 센다."""
+    con = _db()
+    row = con.execute("SELECT rune FROM card_runes WHERE card=?", (str(card_id),)).fetchone()
+    if not row or row["rune"] != str(rune_id):
+        return False
+    _tally(con, "opens", 1)
+    return True
+
+
+_ANY = object()
+
+
+def link_rune(card_id: str, rune_id: str = "", expect=_ANY, rev: str | None = None) -> dict[str, str]:
+    """rune_id 가 비면 연결을 푼다. expect(None=연결 없음 / 룬 id)를 주면 지금 연결이 그것일 때만 바꾼다 —
+    AI 추천을 받은 뒤 사람이 손으로 바꾼 연결을 옛 추천이 덮지 않게 (codex1 next4 회신 2 #5)."""
     rune_id = str(rune_id or "").strip()
     if len(rune_id) > 200:
         raise TodoError("룬 이름이 너무 깁니다.")
     con = _db()
     _one(con, str(card_id))
+    if expect is not _ANY:
+        with con:
+            con.execute("BEGIN IMMEDIATE")
+            card = con.execute("SELECT state, rev FROM cards WHERE id=?", (str(card_id),)).fetchone()
+            if rev is not None and (not card or card["state"] != "open" or str(card["rev"]) != str(rev)):
+                raise TodoError("그 사이 할 일이 바뀌어 적용하지 않았습니다.")
+            now = con.execute("SELECT rune FROM card_runes WHERE card=?", (str(card_id),)).fetchone()
+            if (now["rune"] if now else None) != expect:
+                raise TodoError("그 사이 룬 연결이 바뀌어 적용하지 않았습니다.")
+            con.execute("INSERT OR REPLACE INTO card_runes(card, rune) VALUES (?,?)", (str(card_id), rune_id))
+        return rune_links()
     if rune_id:
         con.execute("INSERT OR REPLACE INTO card_runes(card, rune) VALUES (?,?)", (str(card_id), rune_id))
     else:
@@ -519,6 +568,7 @@ def receive_room_share(room: str, sender: str, text: str, event: str = "", recip
                 con.execute("DELETE FROM notes WHERE card=?", (row["id"],))
                 con.execute("DELETE FROM bodies WHERE card=?", (row["id"],))
                 con.execute("DELETE FROM card_runes WHERE card=?", (row["id"],))   # 이 PC 의 룬 연결도 같은 거래로
+                con.execute("DELETE FROM rune_done_marks WHERE card=?", (row["id"],))
     return True
 
 
@@ -576,6 +626,7 @@ def _apply_share(con: sqlite3.Connection, sender: str, sid: str, op, msg: dict) 
             con.execute("DELETE FROM notes WHERE card=?", (row["id"],))
             con.execute("DELETE FROM bodies WHERE card=?", (row["id"],))
             con.execute("DELETE FROM card_runes WHERE card=?", (row["id"],))
+            con.execute("DELETE FROM rune_done_marks WHERE card=?", (row["id"],))
     elif op == "done":
         undo = bool(msg.get("undo"))
         for row in con.execute("SELECT * FROM cards WHERE share_id=?", (sid,)).fetchall():
