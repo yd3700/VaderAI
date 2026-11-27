@@ -46,7 +46,7 @@ function open(show,focus=true){
 }
 const focusHere=()=>(ms.peer||ms.room?(input.disabled?stream:input):($('#msgFind')||stream)).focus();
 const draftKey=()=>ms.room?'room:'+ms.room:ms.peer;
-function leave(){if(ms.shots?.length)dropShots();photoCache.clear();if(draftKey())drafts[draftKey()]=input.value;ms.epoch++;ms.history=[];ms.safety=null;ms.armed=null;}
+function leave(){ms.assist=null;ms.assistSeq=(ms.assistSeq||0)+1;if(ms.shots?.length)dropShots();photoCache.clear();if(draftKey())drafts[draftKey()]=input.value;ms.epoch++;ms.history=[];ms.safety=null;ms.armed=null;}
 const roomOf=id=>ms.rooms.find(r=>r.id===id);
 async function showRoom(id){
  leave();ms.peer=null;ms.room=id;input.value=drafts['room:'+id]||'';
@@ -194,12 +194,28 @@ function roomForm(){
  f.onsubmit=e=>{e.preventDefault();go.click();};
  return f;
 }
+// 비서에게 내 글 보여주기 (2026-11-27, codex1 next3 ①) — 대화마다, 기본 꺼짐. 켠 뒤 내가 보낸 글만 할 일 [비서에게 묻기] 때 AI 로.
+// 받은 글은 절대 안 간다. 보내는 곳(연결된 AI)을 켜기 전에 보인다.
+function assistToggle(conv){
+ // 가장 최근 조회만 반영한다 — 대화를 옮기거나 AI 를 바꾼 뒤 늦게 온 옛 답이 이름·상태를 덮지 않게 (codex1 회신 3 #2)
+ if(ms.assist==null){const seq=ms.assistSeq=(ms.assistSeq||0)+1;ms.assist=[];ms.assistReady=false;
+  ms.assistFailed=false;
+  Promise.all([api('messenger_assist'),api('todo_ai_target')]).then(([on,t])=>{if(seq!==ms.assistSeq)return;ms.assist=Array.isArray(on)?on:[];ms.assistAi=t?.label||'';ms.assistReady=true;draw();})
+   .catch(()=>{if(seq!==ms.assistSeq)return;ms.assistFailed=true;draw();});}   // 실패는 '확인 못 함' + [다시 확인] (codex1 회신 4 #2)
+ const on=ms.assist.includes(conv),box=el('div','msg-assist');
+ const b=btn('비서에게 내 글 보여주기','assist','msg-assist-switch',{conv});
+ if(!ms.assistReady){b.disabled=true;b.setAttribute('aria-busy','true');}   // 실제 상태를 읽기 전에는 '꺼짐' 으로 누르게 하지 않는다
+ b.setAttribute('role','switch');b.setAttribute('aria-checked',String(on));const k=el('span','toggle');k.setAttribute('aria-hidden','true');k.append(el('span'));b.append(k);
+ if(ms.assistFailed)box.append(el('p','chat-note warn','비서 허용 상태를 확인하지 못했어요.'),btn('다시 확인','assistRetry','text-button'));
+ box.append(b,el('p','chat-note',VaderI18n.t('켜면 이 대화에서 앞으로 내가 보내는 글만(받은 글은 빼고) 할 일 [비서에게 묻기] 를 누를 때 {0} 로 가요. 보낸 뒤에는 되돌릴 수 없어요.',ms.assistAi||VaderI18n.word('연결된 AI'))));
+ return box;
+}
 function drawRoom(r){
  stream.setAttribute('role','log');form.hidden=false;
  if(!r){stream.append(el('p','chat-note','이 방은 더 이상 열 수 없어요.'));status('');return;}
  const joined=r.members.filter(x=>x.state==='joined'),unchecked=joined.filter(x=>!x.me&&!x.verified),old=joined.filter(x=>!x.me&&!x.ready);
  status(r.state!=='joined'?VaderI18n.word('나온 방이에요 · 기록만 볼 수 있어요'):VaderI18n.t('{0}명',joined.length)+(unchecked.length?' · '+VaderI18n.t('안전 번호 확인 안 된 멤버 {0}',unchecked.length):''),!!unchecked.length,true);
- if(r.state==='joined')stream.append(roomPanel(r));
+ if(r.state==='joined')stream.append(roomPanel(r),assistToggle('room:'+r.id));
  if(r.state==='joined'&&unchecked.length){const w=el('p','msg-room-warn','안전 번호를 확인하지 않은 멤버가 있어요. 방 초대만으로 대화하므로 민감한 내용은 확인한 뒤에 보내세요.');stream.append(w);}
  if(r.state==='joined'&&old.length)stream.append(el('p','chat-note',VaderI18n.t('{0}명은 앱을 업데이트해야 이 방 글을 받아요',old.length)));
  if(!ms.history.length)stream.append(el('p','chat-note msg-empty','아직 주고받은 메시지가 없어요.'));
@@ -256,6 +272,7 @@ function drawTalk(f){
  const showSafety=f.state==='accepted'&&f.ready&&(!f.verified||ms.safety?.open);
  if(f.state==='accepted'&&f.verified&&!showSafety)stream.append(btn('안전 번호 다시 보기','safety','text-button msg-safety-link'));
  if(showSafety)stream.append(safetyPanel(f));
+ if(f.state==='accepted'&&f.verified)stream.append(assistToggle('dm:'+f.account_id));
  if(!ms.history.length&&f.verified)stream.append(el('p','chat-note msg-empty','아직 주고받은 메시지가 없어요.'));
  ms.history.forEach(m=>stream.append(bubble(m)));
 }
@@ -437,6 +454,8 @@ async function act(b){
   return;}
  if(m==='safety'){const peer=ms.peer,ep=ms.epoch;try{const s=await api('messenger_safety',{account_id:peer});if(ep===ms.epoch){ms.safety={peer,number:s.number,open:true};draw();}}catch(e){status(e.message,true);}return;}
  if(m==='safetyClose'){ms.safety=null;return draw();}
+ if(m==='assistRetry'){ms.assist=null;return draw();}
+ if(m==='assist'){const on=b.getAttribute('aria-checked')!=='true';try{const got=await call('messenger_assist_set',{conv:b.dataset.conv,on});ms.assist=Array.isArray(got)?got:[];draw();$('.msg-assist-switch',stream)?.focus();status(on?'켰어요. 이제부터 보내는 내 글만 비서에게 가요.':'껐어요. 다음 묻기부터 이 대화의 글은 안 가요.',false,true);}catch(e){}return;}
  if(m==='verify'){
   // 화면에 그린 그 상대·그 번호로만 확인한다
   if(!b.dataset.number||id!==ms.peer)return;
@@ -508,5 +527,6 @@ const start=()=>tick();
 VaderI18n.ready.then(start);
 // 트레이에서 다시 열면: 숨은 동안 코어가 받아 둔 메시지를 친구 목록·대화에 바로 보인다
 const wake=async()=>{await tick();if(ms.state==='ready')await loadFriends().catch(()=>{});if((ms.peer||ms.room)&&!box.hidden)refreshTalk(ms.epoch);};
-window.VaderMessenger={show,showRoom,wake,close:()=>{if(!box.hidden)open(false,false);}};
+window.VaderMessenger={show,showRoom,wake,close:()=>{if(!box.hidden)open(false,false);},
+ aiChanged:()=>{ms.assist=null;ms.assistSeq=(ms.assistSeq||0)+1;if(!box.hidden&&(ms.peer||ms.room))draw();}};   // 기본 AI 가 바뀌었다 — 스위치의 '보낼 곳' 을 다시 읽는다 (codex1 회신 2 #4)
 })();

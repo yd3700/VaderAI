@@ -614,3 +614,23 @@ def test_a_done_request_that_arrives_while_the_result_lookup_is_retrying_is_kept
     messenger.sync()
     [got] = todo.cards()
     assert got["state"] == "done" and got["share_req"] is None
+
+
+def test_leaving_and_rejoining_a_room_ends_the_assistant_permission_even_unread(three):
+    """비서에게 내 글 — 방을 나가면 허용이 그때 끝난다. 허용 목록을 한 번도 안 열고 다시 초대·수락해도 예전 글·허용이 안 살아난다 (codex1 회신 2 #1)."""
+    server, people, be, room = three
+    be("dara")
+    messenger_rooms.rooms()
+    assert messenger.assist_set(f"room:{room}", True) == [f"room:{room}"]
+    messenger_rooms.send(room, "TEST-OLD-예전 가입 때 글")
+    messenger_rooms.leave(room)                                   # 이 PC 에서 나왔다 — 목록을 맞추며 허용이 끝난다
+    with messenger._one() as con:
+        assert con.execute("SELECT count(*) FROM assist_perm").fetchone()[0] == 0
+    server.rooms[room]["members"][people["dara"]["account"]] = {"state": "invited", "read": 0}   # 다시 초대
+    messenger_rooms.accept(room)
+    assert messenger.assist_mine()["messages"] == [] and messenger.assist_list() == []
+
+    messenger.assist_set(f"room:{room}", True)
+    server.rooms[room]["members"][people["dara"]["account"]] = {"state": "invited", "read": 0}   # 이 PC 가 꺼진 사이 내보내졌다 다시 초대됨
+    messenger_rooms.accept(room)                                  # 목록을 한 번도 안 보고 바로 수락해도
+    assert messenger.assist_list() == []

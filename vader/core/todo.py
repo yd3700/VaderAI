@@ -30,7 +30,8 @@ CREATE INDEX IF NOT EXISTS notes_parent ON notes(card, parent);
 CREATE TABLE IF NOT EXISTS bodies(node TEXT PRIMARY KEY, card TEXT NOT NULL, body BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS share_out(id INTEGER PRIMARY KEY AUTOINCREMENT, peer TEXT NOT NULL, payload BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS share_seen(event TEXT PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS imports(key TEXT PRIMARY KEY, card TEXT NOT NULL, at TEXT NOT NULL);"""
+CREATE TABLE IF NOT EXISTS imports(key TEXT PRIMARY KEY, card TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS card_runes(card TEXT PRIMARY KEY, rune TEXT NOT NULL);"""
 TITLE_MAX = 200
 #: 열쇠 확인→만들기→저장을 한 번에. 앱은 PC 에 하나만 뜬다(gate.hold_instance) — 프로세스 안 잠금이면 된다 (codex1 P1-3).
 _KEY_LOCK = threading.Lock()
@@ -213,7 +214,31 @@ def delete(card_id: str) -> list[dict]:
         con.execute("DELETE FROM cards WHERE id=?", (card_id,))
         con.execute("DELETE FROM notes WHERE card=?", (card_id,))
         con.execute("DELETE FROM bodies WHERE card=?", (card_id,))
+        con.execute("DELETE FROM card_runes WHERE card=?", (card_id,))
     return cards()
+
+
+# ── 카드 ↔ 룬 (2026-11-27 마스터 결정, codex2 llm-node-hub §5 · codex1 next3 ③) ──
+# 사람이 고른 설치된 룬 하나. **이 PC 에만** — `_card` 에 넣지 않는다. 그래서 폰·공유 글·방 공유·AI 로 보내는 카드 자료·
+# 완료 기록 엑셀 어디에도 실리지 않는다. 열기만 한다(실행·설치·끝냄은 사람이 룬 화면에서). 룬이 있는지는 화면을 부른 쪽이 본다.
+
+def rune_links() -> dict[str, str]:
+    # 카드가 있는 연결만 — 지우는 길이 하나 더 생겨도 사라진 카드의 연결을 돌려주지 않게
+    return {r["card"]: r["rune"] for r in _db().execute("SELECT r.card, r.rune FROM card_runes r JOIN cards c ON c.id=r.card")}
+
+
+def link_rune(card_id: str, rune_id: str = "") -> dict[str, str]:
+    """rune_id 가 비면 연결을 푼다."""
+    rune_id = str(rune_id or "").strip()
+    if len(rune_id) > 200:
+        raise TodoError("룬 이름이 너무 깁니다.")
+    con = _db()
+    _one(con, str(card_id))
+    if rune_id:
+        con.execute("INSERT OR REPLACE INTO card_runes(card, rune) VALUES (?,?)", (str(card_id), rune_id))
+    else:
+        con.execute("DELETE FROM card_runes WHERE card=?", (str(card_id),))
+    return rune_links()
 
 
 # ── 멤버 공유 (마스터 요청 2026-11-18) ──
@@ -493,6 +518,7 @@ def receive_room_share(room: str, sender: str, text: str, event: str = "", recip
                 con.execute("DELETE FROM cards WHERE id=?", (row["id"],))
                 con.execute("DELETE FROM notes WHERE card=?", (row["id"],))
                 con.execute("DELETE FROM bodies WHERE card=?", (row["id"],))
+                con.execute("DELETE FROM card_runes WHERE card=?", (row["id"],))   # 이 PC 의 룬 연결도 같은 거래로
     return True
 
 
@@ -549,6 +575,7 @@ def _apply_share(con: sqlite3.Connection, sender: str, sid: str, op, msg: dict) 
             con.execute("DELETE FROM cards WHERE id=?", (row["id"],))
             con.execute("DELETE FROM notes WHERE card=?", (row["id"],))
             con.execute("DELETE FROM bodies WHERE card=?", (row["id"],))
+            con.execute("DELETE FROM card_runes WHERE card=?", (row["id"],))
     elif op == "done":
         undo = bool(msg.get("undo"))
         for row in con.execute("SELECT * FROM cards WHERE share_id=?", (sid,)).fetchall():

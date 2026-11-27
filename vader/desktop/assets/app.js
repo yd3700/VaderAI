@@ -908,7 +908,10 @@ const local=d=>ymd(d)+'T'+String(d.getHours()).padStart(2,'0')+':'+String(d.getM
 const md=s=>s.slice(5,10).replace('-','/');
 async function loadTodos(quiet) {
  // 메인 그래프에도 할 일이 서므로 늘 읽는다. 날짜가 바뀌어도 '오늘/다음' 을 다시 나눈다
- try{const cs=await api('todo_list'),day=ymd(new Date()),next=JSON.stringify(cs)+day;state.todoError='';if(next!==loadTodos.last){loadTodos.last=next;state.todos=cs;todoBadge();if((state.page==='todo'&&!dragCard)||state.page==='core')render();}}   // 끄는 중엔 다시 그리지 않는다
+ try{const cs=await api('todo_list'),day=ymd(new Date()),next=JSON.stringify(cs)+day;state.todoError='';
+  if(state.todoAiTarget===undefined){state.todoAiTarget='';api('todo_ai_target').then(t=>{state.todoAiTarget=t?.label||'';if(state.page==='todo')render();}).catch(()=>{});}   // 보내는 곳 — 보내기 전에 보이게
+  const links=await api('todo_runes').catch(()=>state.todoRunes||{}),lk=JSON.stringify(links);if(lk!==loadTodos.links){loadTodos.links=lk;state.todoRunes=links;if(state.page==='todo')render();}
+  if(next!==loadTodos.last){loadTodos.last=next;state.todos=cs;todoBadge();if((state.page==='todo'&&!dragCard)||state.page==='core')render();}}   // 끄는 중엔 다시 그리지 않는다
  catch(e){state.todoError=e.message;if(state.page==='todo')render();}
 }
 // 광장에 더 새 판이 있는 룬 — [내 룬] 에 점 (코어가 받아 둔 목록만 본다, 통신 없음)
@@ -946,11 +949,32 @@ function todoCard(c) {
  return '<li class="todo-card'+(c.state==='done'?' done':'')+'"'+(c.state==='open'?' data-card="'+c.id+'"':'')+'>'
   +(c.state==='open'?'<span class="todo-grip" aria-hidden="true">'+icon('grip')+'</span>':'')
   +'<button id="todo-check-'+c.id+'" type="button" class="todo-check" role="checkbox" aria-checked="'+(c.state==='done')+'" aria-label="'+esc(c.title+' · '+T(c.state==='done'?'완료 취소':'완료'))+'" data-raw title="완료 전환 · Alt+↑/↓로 순서 이동" data-action="todoDone" data-id="'+c.id+'"><span>'+(c.state==='done'?icon('confirm'):'')+'</span></button>'
-  +'<div class="todo-copy"><button type="button" class="todo-open" data-action="noteOpen" data-id="'+c.id+'" aria-expanded="'+(state.note?.card===c.id)+'" aria-controls="todoNote" title="세부 내용 (카드를 눌러도 열려요)">'+raw(c.title)+'</button>'+(who?'<small>'+who+'</small>':'')+'</div><small class="todo-meta">'+meta+'</small>'+shareBtn
+  +'<div class="todo-copy"><button type="button" class="todo-open" data-action="noteOpen" data-id="'+c.id+'" aria-expanded="'+(state.note?.card===c.id)+'" aria-controls="todoNote" title="세부 내용 (카드를 눌러도 열려요)">'+raw(c.title)+'</button>'+(who?'<small>'+who+'</small>':'')+'</div><small class="todo-meta">'+meta+'</small>'+todoRuneChip(c)+shareBtn
   +'<details class="todo-menu"><summary id="todo-more-'+c.id+'" aria-label="'+esc(T('{0} 더보기',c.title))+'" data-raw>'+todoMoreIcon()+'</summary><div class="todo-menu-items">'
   +(c.state==='open'&&!c.owner?'<button type="button" data-action="todoSnooze" data-id="'+c.id+'">미루기</button>':'')
+  +'<button type="button" data-action="todoRunePick" data-id="'+c.id+'">'+T(state.todoRunes?.[c.id]?'룬 바꾸기':'룬 연결')+'</button>'
   +'<button type="button" data-action="todoDelete" data-id="'+c.id+'">'+(c.owner?'내 목록에서 빼기':'지우기')+'</button></div></details>'
   +(state.note?.card===c.id?postitView(state.note):'')+'</li>';
+}
+// 카드 ↔ 룬 (2026-11-27) — 사람이 고른 설치된 룬 하나를 연다. 이 PC 에만(폰·공유·AI 로 안 간다). 연 뒤 실행은 룬 화면에서 사람이.
+// 룬이 지워졌으면 이름이 같은 다른 룬을 열지 않고 '룬 없음 · 연결 풀기' (codex1 next3 ③).
+function todoRuneChip(c) {
+ const id=state.todoRunes?.[c.id];if(!id)return '';
+ const r=taskRunes[id];
+ return r?'<button type="button" class="button ghost todo-rune" data-action="todoRuneOpen" data-rune="'+esc(id)+'" title="'+esc(T('{0} 룬 화면 열기',r.name))+'">'+icon('arrow')+'<span data-raw>'+esc(r.name)+'</span></button>'
+  :'<span class="todo-shared done-mark">'+T('룬 없음')+' · <button type="button" class="text-button" data-action="todoRuneUnlink" data-id="'+c.id+'">'+T('연결 풀기')+'</button></span>';
+}
+async function todoRuneSet(id,rune) {
+ try{state.todoRunes=await api('todo_link_rune',{card_id:id,rune_id:rune});loadTodos.links=JSON.stringify(state.todoRunes);render();$('#todo-more-'+id)?.focus();}
+ catch(e){toast(e.message);}
+}
+function todoRunePick(a) {
+ const id=a.dataset.id,c=(state.todos||[]).find(x=>x.id===id);if(!c)return;
+ const now=state.todoRunes?.[id],ids=Object.keys(taskRunes);
+ const d=modal(heading('룬 연결')+'<p class="dialog-copy"><b>'+raw(c.title)+'</b> '+T('에서 열 룬을 골라요. 누르면 그 룬 화면이 열리고, 실행은 거기서 직접 해요. 이 PC 에만 남아요.')+'</p>'
+  +(ids.length?'<div class="todo-rune-list">'+ids.map(r=>'<button type="button" class="button '+(r===now?'primary':'ghost')+'" data-pick="'+esc(r)+'"'+(r===now?' aria-pressed="true"':'')+'>'+sigil(r)+'<span data-raw>'+esc(taskRunes[r].name)+'</span></button>').join('')+'</div>':'<p class="muted">'+T('설치된 룬이 없어요.')+'</p>')
+  +'<div class="actions">'+(now?'<button type="button" class="button ghost" data-pick="">'+T('연결 풀기')+'</button>':'')+'</div>');
+ d.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{d.close();todoRuneSet(id,b.dataset.pick);});
 }
 // 멤버 고르기 — 고른 동안만 카드마다 [공유]. 안전 번호를 확인한 친구와 그 친구들이 있는 그룹만 (메신저와 같은 조건).
 function todoMemberName(){const m=state.todoMember||'';if(m.startsWith('r:'))return roomName(m.slice(2));if(m.startsWith('g:'))return (state.todoGroups||[]).find(g=>g.id===m.slice(2))?.name+' 그룹';return handleOf(m.slice(2));}
@@ -979,7 +1003,7 @@ function todoView() {
   +(state.todoError?'<p class="ai-bad" role="alert">'+esc(state.todoError)+'</p>':'')
   +(tab==='archive'?archiveView():(shown.length?'<ul class="todo-list" aria-label="'+T('{0} 할 일',T({today:'오늘',next:'예정',all:'전체'}[tab]))+'">'+shown.map(todoCard).join('')+'</ul>':'<p class="muted todo-empty">'+(tab==='next'?'예정된 할 일이 없어요.':open.length?'오늘 할 일을 모두 마쳤어요.':'할 일이 없어요. 위 칸에 적고 Enter 를 누르세요.')+'</p>')
   +'<details id="todoCompleted" class="todo-completed"'+(state.todoCompleted?' open':'')+'><summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>오늘 완료 <span>'+done.length+'</span></summary>'+(done.length?'<ul class="todo-list">'+done.map(todoCard).join('')+'</ul>':'<p class="muted">아직 완료한 일이 없어요.</p>')+'</details>')
-  +todoFeedView()+form+'<p class="muted todo-note">'+T('Enter 는 이 PC 에만 추가해요. [비서에게 묻기]를 누르면 적은 말과 열린 할 일(제목·날짜·알림 시각)을 연결된 AI 로 보내요. 끝낸 기록은 보내지 않고 이 PC 에서 찾아요.')+'</p></section>';
+  +todoFeedView()+form+'<p class="muted todo-note">'+T('Enter 는 이 PC 에만 추가해요. [비서에게 묻기]를 누르면 적은 말, 열린 할 일(제목·날짜·알림 시각), 메신저에서 켠 대화의 내가 보낸 글을 {0} 로 보내요. 받은 글과 끝낸 기록은 보내지 않아요.','<b data-raw>'+esc(state.todoAiTarget||T('연결된 AI'))+'</b>')+'</p></section>';
 }
 // 세부 포스트잇 (마스터 요청 2026-11-18) — 카드 제목을 누르면 열린다. 적는 칸 + 하위 항목. 항목을 누르면 그 안으로(드릴다운),
 // 위 경로를 누르면 밖으로(드릴업). 3단까지. 적은 내용은 손을 멈추면 저장한다 — 다시 그리지 않아 적던 자리가 그대로다.
@@ -1056,7 +1080,8 @@ function todoFeedView() {
       :'<button type="button" class="button ghost todo-suggest" data-action="todoSuggest" data-turn="'+n+'" data-i="'+i+'"'+(r?.busy?' disabled':'')+'>'+suggestWord(c)+'</button>'+(r?.error?'<small class="ai-bad">'+esc(r.error)+'</small>':''))+'</li>';}).join('')+'</ul>'
      :!t.plan.lookup&&!t.plan.note?'<p class="muted">'+T('바꿀 것을 찾지 못했어요.')+'</p>':'')
    +(t.plan.skipped?'<p class="muted">'+T('알아보지 못한 제안 {0}개는 뺐어요.',t.plan.skipped)+'</p>':'')
-   +(t.plan.limited?'<p class="muted">'+T('열린 할 일이 많아 앞의 {0}개만 AI 에 보냈어요.',t.plan.sent)+'</p>':''))
+   +(t.plan.limited?'<p class="muted">'+T('열린 할 일이 많아 앞의 {0}개만 AI 에 보냈어요.',t.plan.sent)+'</p>':'')
+   +(t.plan.mine?.messages?'<p class="muted">'+T('켠 대화 {0}곳의 내 글 {1}건을 함께 보냈어요.',t.plan.mine.convs,t.plan.mine.messages)+'</p>':''))
   +'</div></section>').join('')+'</div>';
 }
 async function todoAsk() {
@@ -1319,14 +1344,23 @@ const AI_NOTICE={agy_console:'<b>Antigravity 는 설치·로그인과 제작소(
  +'<br><br>Antigravity CLI 는 그림을 읽는 동안 이 PC 의 다른 파일(다른 문서·로그인 정보 등)까지 읽을 수 있고, 읽는 범위를 작업 폴더로 제한하는 방법이 아직 없어요. 환자 정보가 든 문서가 다른 자료와 섞여 나가지 않도록 막아 두었어요.'
  +'<br><br>문서 읽기는 Claude Code·Codex·Google Gemini 를 쓰세요. 범위를 제한할 수 있게 되면 다시 확인해서 열어요.'};
 const aiNotice=id=>'<details class="ai-notice"><summary aria-label="사용 안내"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v6"/><circle cx="12" cy="16.6" r=".6" fill="currentColor"/></svg></summary><div class="ai-notice-pop" role="note">'+AI_NOTICE[id]+'</div></details>';
+// 구독 사용량 (2026-11-27) — Codex 는 공식 app-server 에서 읽은 창만, Claude Code 는 '—' 와 /usage 안내. 없는 값을 0% 로 채우지 않는다.
+const aiLeft=at=>{const m=Math.max(0,Math.round((at*1000-Date.now())/60000));return m>=1440?Math.floor(m/1440)+'d '+Math.floor(m%1440/60)+'h':Math.floor(m/60)+'h '+m%60+'m';};
+const aiWindow=w=>w===300?T('5시간'):w===10080?T('주간'):w?T('{0}분',w):'—';
+function aiUsage(u) {
+ if(!u)return '';
+ const parts=u.windows?u.windows.map(w=>aiWindow(w.window_mins)+' '+w.used_percent+'%'+(w.resets_at?' · '+T('{0} 뒤 초기화',aiLeft(w.resets_at)):'')):['—'];
+ return '<p class="small muted ai-usage">'+T('사용량')+' '+parts.join(' / ')+(u.note?' · '+T(u.note):'')+'</p>';
+}
 function renderAi() {
+ state.todoAiTarget=undefined;window.VaderMessenger?.aiChanged?.();   // 기본 AI 가 바뀌었을 수 있다 — 할 일 안내·메신저 스위치의 '보내는 곳' 을 다시 읽는다
  window.VaderChat?.sync();   // AI 를 붙이거나 떼면 어느 화면에서든 대화 서랍이 바로 따라간다 (codex1 P2-3)
  const name=id=>aiv.cards.find(c=>c.id===id)?.label||id;
  const route=aiv.thinking?'<p class="ai-route"><span>판단·대화</span><b>'+esc(name(aiv.thinking))+'</b>'+(aiv.documents&&aiv.documents!==aiv.thinking?'<span>문서 처리</span><b>'+esc(name(aiv.documents))+'</b>':'')+'</p>'
   :'<p class="ai-route empty">'+icon('info')+'<span>'+(aiv.default?esc(name(aiv.default))+' (기본 AI) 를 지금 쓸 수 없어요. 아래 카드에서 조치하세요.':aiv.cards.some(c=>c.state==='on')?'기본 AI 가 없어요. 쓸 카드에서 ☆ 기본으로 를 눌러 고르세요.':'아직 쓸 AI 가 없어요. 아래에서 서비스 하나에 키를 넣어 연결하세요. AI 가 필요 없는 룬은 지금도 쓸 수 있어요.')+'</span></p>';
  const cards=aiv.cards.map(c=>{
   const [st,tone]=AI_STATE[c.state], open=aiOpen===c.id, m=aiMsg[c.id];
-  const star=c.keyless?(c.documents?'<span class="ai-star on" title="문서 읽기를 맡은 AI">문서 담당</span>':''):c.is_default?'<span class="ai-star on" title="기본 AI">★ 기본</span>':c.state==='on'?('<button type="button" class="ai-star" data-action="aiDefault" data-id="'+esc(c.id)+'">☆ 기본으로</button>'):'';
+  const star=(c.keyless&&c.documents?'<span class="ai-star on" title="문서 읽기를 맡은 AI">문서 담당</span>':'')+(c.is_default?'<span class="ai-star on" title="기본 AI">★ 기본</span>':c.state==='on'&&(!c.keyless||c.can_default)?('<button type="button" class="ai-star" data-action="aiDefault" data-id="'+esc(c.id)+'">☆ 기본으로</button>'):'');
   const keyForm=(label)=>c.keyless?'<div class="ai-form">'+button('aiCheck',label==='연결'?'연결 확인':label,'link','primary').replace('data-action="aiCheck"','data-action="aiCheck" data-id="'+esc(c.id)+'"')+'</div>'+(c.key_help?'<p class="small muted">'+esc(c.key_help)+'</p>':''):'<div class="ai-form"><label class="sr-only" for="k-'+esc(c.id)+'">'+esc(c.service)+' 키</label><input id="k-'+esc(c.id)+'" type="password" data-ai-key="'+esc(c.id)+'" placeholder="API 키" autocomplete="off" spellcheck="false">'+button('aiConnect',label,'link','primary').replace('data-action="aiConnect"','data-action="aiConnect" data-id="'+esc(c.id)+'"')+'</div>'+(c.key_help?'<p class="small muted">'+esc(c.key_help)+'</p>':'');
   // 터미널 AI (2026-11-19) — 설치 안 됐으면 [설치], 로그인이 필요하면 [로그인] (제작소 개발 모드와 같은 흐름)
   const cl=c.keyless?(aiv.clients||[]).find(x=>x.id===c.id.replace('_console','')):null;
@@ -1339,12 +1373,12 @@ function renderAi() {
    :termBody||(c.state==='off'
    ?(open?keyForm('연결'):button('aiOpenCard','연결하기','arrow','ghost').replace('data-action="aiOpenCard"','data-action="aiOpenCard" data-id="'+esc(c.id)+'"'))
    :(c.recommended&&c.state==='fix'?button('aiRecommend','권장 모델로 연결 확인','link','primary').replace('data-action="aiRecommend"','data-action="aiRecommend" data-id="'+esc(c.id)+'"')+'<p class="small muted">권장: '+esc(c.recommended)+'</p>':'')
-    +'<details class="ai-advanced"'+(open?' open':'')+'><summary>고급</summary><div class="settings-field"><label for="m-'+esc(c.id)+'">모델</label><div><input id="m-'+esc(c.id)+'" data-ai-model="'+esc(c.id)+'" value="'+esc(c.model)+'" autocomplete="off" spellcheck="false">'+button('aiCheck','연결 확인','link','ghost').replace('data-action="aiCheck"','data-action="aiCheck" data-id="'+esc(c.id)+'"')+'</div></div><p class="small muted">키 바꾸기'+(c.shared>1?' — 이 키를 쓰는 모델 '+c.shared+'개에 함께 적용돼요':'')+'</p>'+(c.keyless?'':keyForm('새 키로 연결'))+'<button type="button" class="text-button danger" data-action="aiDisconnect" data-id="'+esc(c.id)+'">'+(c.shared>1?(aiArmed===c.id?'한 번 더 누르면 이 모델을 지워요 (키는 남아요)':'이 모델 지우기'):(aiArmed===c.id?'한 번 더 누르면 연결을 끊어요':'연결 끊기'))+'</button></details>');
-  return (c.keyless?'\u0001':'')+'<article class="ai-svc '+c.state+(c.is_default?' default':'')+'"><div class="ai-svc-head"><span class="ai-svc-name"><strong>'+esc(c.service)+'</strong><small>'+(c.state==='off'?'':esc(c.model))+'</small></span>'+star+'<span class="chip '+tone+'">'+st+'</span>'+(AI_NOTICE[c.id]?aiNotice(c.id):'')+'</div><p class="ai-can">'+esc(c.id==='agy_console'?T('설치 · 로그인 · 룬 만들기'):c.can.map(x=>T(x)).join(' · '))+'</p>'+(c.state==='fix'?'<p class="small ai-bad">'+esc(c.state_text)+'</p>':c.state==='on'?'<p class="small muted">'+esc(c.state_text)+'</p>':'')+body+(m?'<p class="small '+(m.ok?'ai-ok':m.ok===false?'ai-bad':'muted')+'" role="status">'+esc(m.text)+'</p>':'')+'</article>';
+    +'<details class="ai-advanced"'+(open?' open':'')+'><summary>고급</summary><div class="settings-field"><label for="m-'+esc(c.id)+'">모델</label><div><input id="m-'+esc(c.id)+'" data-ai-model="'+esc(c.id)+'" value="'+esc(c.model)+'" autocomplete="off" spellcheck="false"'+(c.models?.length?' list="ml-'+esc(c.id)+'" placeholder="'+T('비우면 프로그램 기본값')+'"':'')+'>'+(c.models?.length?'<datalist id="ml-'+esc(c.id)+'">'+c.models.map(x=>'<option value="'+esc(x)+'">').join('')+'</datalist>':'')+''+button('aiCheck','연결 확인','link','ghost').replace('data-action="aiCheck"','data-action="aiCheck" data-id="'+esc(c.id)+'"')+'</div></div><p class="small muted">키 바꾸기'+(c.shared>1?' — 이 키를 쓰는 모델 '+c.shared+'개에 함께 적용돼요':'')+'</p>'+(c.keyless?'':keyForm('새 키로 연결'))+'<button type="button" class="text-button danger" data-action="aiDisconnect" data-id="'+esc(c.id)+'">'+(c.shared>1?(aiArmed===c.id?'한 번 더 누르면 이 모델을 지워요 (키는 남아요)':'이 모델 지우기'):(aiArmed===c.id?'한 번 더 누르면 연결을 끊어요':'연결 끊기'))+'</button></details>');
+  return (c.keyless?'\u0001':'')+'<article class="ai-svc '+c.state+(c.is_default?' default':'')+'"><div class="ai-svc-head"><span class="ai-svc-name"><strong>'+esc(c.service)+'</strong><small>'+(c.state==='off'?'':esc(c.model))+'</small></span>'+star+'<span class="chip '+tone+'">'+st+'</span>'+(AI_NOTICE[c.id]?aiNotice(c.id):'')+'</div><p class="ai-can">'+esc(c.id==='agy_console'?T('설치 · 로그인 · 룬 만들기'):c.can.map(x=>T(x)).join(' · '))+'</p>'+(c.state==='fix'?'<p class="small ai-bad">'+esc(c.state_text)+'</p>':c.state==='on'?'<p class="small muted">'+esc(c.state_text)+'</p>':'')+aiUsage(c.usage)+body+(m?'<p class="small '+(m.ok?'ai-ok':m.ok===false?'ai-bad':'muted')+'" role="status">'+esc(m.text)+'</p>':'')+'</article>';
  });
  // 터미널 AI(이 PC 에 로그인된 프로그램, 키 없음) / API AI(키) 를 나눠 보인다 (마스터 2026-11-19)
  const term=cards.filter(x=>x.startsWith('\u0001')).map(x=>x.slice(1)).join(''),apis=cards.filter(x=>!x.startsWith('\u0001')).join('')+aiAddCard();
- const cardsHtml='<h3 class="ai-section">터미널 AI <small>이 PC 에 설치·로그인된 프로그램 · 키 없이 문서 읽기</small></h3><div class="ai-grid">'+term+'</div>'
+ const cardsHtml='<h3 class="ai-section">터미널 AI <small>이 PC 에 설치·로그인된 프로그램 · 키 없이 문서 읽기·대화</small></h3><div class="ai-grid">'+term+'</div>'
   +'<h3 class="ai-section">API AI <small>키를 넣어 연결 · 판단·대화·문서 읽기</small></h3><div class="ai-grid">'+apis+'</div>';
  const d=modal(heading('AI 연결')+'<p class="dialog-copy"><b>터미널 AI</b> 는 이 PC 에 설치·로그인된 프로그램으로, <b>API AI</b> 는 키로 연결해요. <b>별을 찍은 기본 AI</b> 가 판단·대화를 맡고, 문서 읽기는 문서를 읽을 수 있는 AI 가 맡아요.</p>'+route+cardsHtml+'<p class="small muted ai-foot">연결 확인은 업무 자료 없이 짧은 요청 한 번이에요 · 요금이 날 수 있어요. 키는 이 PC 의 Windows 보호 저장소에 암호화해 두고 다시 보여 주지 않아요. 터미널 AI 는 그 프로그램의 로그인 계정 사용량을 써요.</p><p id="dialogError" role="alert"></p>',true);
  d.onclose=aiClosed;
@@ -1494,7 +1528,9 @@ const actions={core:()=>navigate('core'),trySamples:()=>start(taskRunes[state.ta
  back:()=>navigate('core'),confirmResult,settings:openSettings,install:()=>installRune(),devMode,openClient,installClient,connectClient,stopConsole,reviewTest,allowTest,confirmInstall,aiOpenCard,aiConnect,aiCheck,aiRecommend,aiDefault,aiDisconnect,aiAdd,openAi:()=>openAssignments().catch(e=>toast(e.message)),installProject,editRune,linkSource,importRecording,attachFile,recordOpen,recordSave,recordTell,recordDiscard,recordAgain,editWith,closeDialog:()=>$('#settingsDialog').close(),connect,
  retry:()=>retry(),retryPick:async()=>{const p=await api('pick');if(p.length)await retry(p);},
  promote,dismissPromote:()=>{state.dismissed.add(state.job.id);render();},
- graphHome,runSearch,todoSnooze,todoDelete,
+ graphHome,runSearch,todoSnooze,todoDelete,todoRunePick,
+ todoRuneOpen:a=>{const id=a.dataset.rune;if(!taskRunes[id]){toast(T('룬 없음'));render();return;}state.task=id;if(taskRunes[id].locked)state.dryRun=true;navigate('runes');},
+ todoRuneUnlink:a=>todoRuneSet(a.dataset.id,''),
  todoUnshare:async a=>{const c=(state.todos||[]).find(x=>x.id===a.dataset.id),to=shareTargets().filter(x=>(c?.shared_with||[]).includes(x));if(!to.length)return;try{state.todos=await api('todo_unshare',{card_id:a.dataset.id,account_ids:to});loadTodos.last=JSON.stringify(state.todos)+ymd(new Date());render();$('[data-action="todoShare"][data-id="'+a.dataset.id+'"]')?.focus();toast('공유를 취소했어요. 받은 쪽 목록에서도 빠져요.');}catch(e){toast(e.message);}},
  todoShare:async a=>{const to=shareTargets();if(!to.length)return;try{state.todos=await api('todo_share',{card_id:a.dataset.id,account_ids:to});loadTodos.last=JSON.stringify(state.todos)+ymd(new Date());render();toast('공유했어요 ('+todoMemberName()+'). 메신저가 연결돼 있으면 바로, 아니면 연결될 때 보내요.');}catch(e){toast(e.message);}},
  noteOpen:async a=>{if(state.note?.card===a.dataset.id)return noteFold();await noteSave();await noteLoad(a.dataset.id,'');},

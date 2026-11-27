@@ -15,6 +15,7 @@ from vader import __version__
 from vader.core import account, config, conversation, gate, journal, messenger, messenger_rooms, phone, publisher, signing, todo, todo_ai, todo_archive, update
 from vader.core import screen as screen_auto   # 화면 자동화 엔진 중개 (agent-desktop)
 from vader.core import screen_broker
+from vader.core.ocr import console as console_ai   # 로그인된 Claude Code·Codex 대화 — 잠기면 보내지 않는다
 from vader.desktop.controller import DesktopController
 
 
@@ -159,6 +160,8 @@ class DesktopAPI:
                 'messenger_group_delete': messenger.group_delete,
                 'messenger_group_assign': messenger.group_assign,
                 # 그룹 채팅방 (2026-11-26) — 방 초대만으로 대화. 방 이름은 이 PC 에만
+                'messenger_assist': messenger.assist_list,     # 비서에게 내 글 보여주기 — 켠 대화 목록
+                'messenger_assist_set': messenger.assist_set,
                 'messenger_rooms': messenger_rooms.rooms,
                 'messenger_room_create': messenger_rooms.create,
                 'messenger_room_rename': messenger_rooms.rename,
@@ -203,6 +206,9 @@ class DesktopAPI:
                 'todo_import_pick': self._todo_import_pick,
                 'todo_import_apply': todo_archive.import_apply,
                 'todo_import_cancel': todo_archive.drop_pending,
+                'todo_runes': todo.rune_links,     # 카드 ↔ 룬 — 이 PC 에만 (폰·공유·AI 로 안 간다)
+                'todo_link_rune': self._todo_link_rune,
+                'todo_ai_target': todo_ai.target,  # 보낼 AI 이름 — 보내기 전에 화면에
                 'todo_propose': todo_ai.propose,   # 말로 정리 — 제안만, 바꾸지 않는다
                 'todo_apply': todo_ai.apply,       # 사람이 [적용] 을 누른 제안만
                 'phone_list': phone.phones,        # 폰에서 할 일 보기 — 연결 코드로 증명한 폰만 승인
@@ -214,9 +220,11 @@ class DesktopAPI:
                 raise ValueError('지원하지 않는 명령입니다.')
             try:
                 messenger.set_alive(lambda: self._gen == gen)   # 메신저는 잠기면 하던 일을 다음 단계에서 멈춘다 (codex1 3c P2-3)
+                console_ai.set_alive(lambda: self._gen == gen)  # 로그인 AI 대화도 — 차례를 기다리는 사이 잠갔으면 보내지 않는다 (codex1 next3 ②)
                 data = handlers[method](**args)
             finally:
                 messenger.set_alive(None)    # 이 요청의 검사를 다음 요청(같은 스레드)에 남기지 않는다
+                console_ai.set_alive(None)
                 if self._gen != gen:
                     return _LOCKED   # noqa: B012 — 도는 사이 잠겼다. 답도 오류 문장도 잠긴 화면에 보내지 않는다
             if method in ('ai_connect', 'ai_default', 'ai_add', 'ai_disconnect'):
@@ -396,6 +404,7 @@ class DesktopAPI:
                 return
             self._open, self._pending = False, None
             self._gen += 1
+            console_ai.forget_limits()       # 구독 사용량은 다음에 다시 읽는다
             try:
                 gate.mark(self._folder, False)   # 맥박과 같은 문 아래 — 뒤늦은 맥박이 '열림' 으로 덮지 못하게 (codex1 NEW-P1-1)
             except Exception:
@@ -481,6 +490,11 @@ class DesktopAPI:
         got = todo_archive.export_file(start, end, bool(imported), str(query or ''))
         subprocess.Popen(['explorer.exe', '/select,', got['path']])
         return got
+
+    def _todo_link_rune(self, card_id, rune_id=''):
+        if rune_id and str(rune_id) not in self._controller.runes:   # 설치된 룬만 — 이름이 같은 다른 것을 대신 고르지 않는다
+            raise ValueError('설치된 룬이 아니에요.')
+        return todo.link_rune(card_id, rune_id)
 
     def _todo_import_pick(self):
         chosen = self._window.pick(types=('md 파일 (*.md;*.markdown;*.txt)',)) or []

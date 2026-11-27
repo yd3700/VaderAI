@@ -76,6 +76,7 @@ def store(con, listed: list[dict]) -> None:
         for row in con.execute("SELECT id FROM rooms WHERE state IN ('joined','invited')").fetchall():
             if row["id"] not in seen:                 # 나왔거나 내보내졌거나 방이 닫혔다 — 기록은 남긴다
                 con.execute("UPDATE rooms SET state='ended' WHERE id=?", (row["id"],))
+        M.drop_assist(con)                            # 들어가 있지 않은 방의 '비서에게 내 글' 허용은 여기서 끝난다
 
 
 def _default_name(con, rid: str, me: str) -> str:
@@ -165,6 +166,8 @@ def invite(room: str, account_ids: list[str]) -> list[dict]:
 
 
 def accept(room: str) -> list[dict]:
+    with M._one() as con:     # 새로 들어가는 방 — 예전 가입 때의 '비서에게 내 글' 허용은 목록을 못 봤어도 여기서 끝낸다
+        con.execute("DELETE FROM assist_perm WHERE conv=?", (f"room:{room}",))
     return _act("room_accept", {"room": str(room)})
 
 

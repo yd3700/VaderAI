@@ -130,6 +130,12 @@ def _failed_check(name: str) -> bool:
     return checked.get("ok") is False and checked.get("model") == config.get(f"api.providers.{name}.model")
 
 
+def _failed_chat(name: str) -> bool:
+    """지금 모델로 한 대화 확인이 실패했나 (로그인 AI 만 'chat' 을 따로 남긴다 — codex1 next3 회신 2 #3)."""
+    checked = config.get(f"api.providers.{name}.checked") or {}
+    return checked.get("chat") is False and checked.get("model") == config.get(f"api.providers.{name}.model")
+
+
 def _look(name: str, ledger: UsageLedger, role: str = "") -> Candidate:
     # 순환 import 를 피한다 — 등록표는 게이트웨이 쪽에 있다.
     from vader.core.ocr import PROVIDERS, provider_factory
@@ -149,6 +155,8 @@ def _look(name: str, ledger: UsageLedger, role: str = "") -> Candidate:
         blocked = "패키지나 API 키가 없습니다"
     elif _failed_check(name):
         blocked = "연결 확인에 실패했습니다"
+    elif role == "chat" and _failed_chat(name):
+        blocked = "대화 확인에 실패했습니다"   # 로그인 AI — 문서 확인만 통과했다. 문서 읽기는 그대로 맡는다
     elif limit > 0 and used >= limit:
         blocked = f"오늘 한도를 다 썼습니다 ({used}/{limit})"
     else:

@@ -37,14 +37,15 @@ PRESETS = {
                "key_help": "aistudio.google.com 에서 API 키 발급"},
     "claude": {"service": "Anthropic Claude", "model": "claude-haiku-4-5",
                "key_help": "console.anthropic.com 에서 API 키 발급"},
-    # 키 없이 이 PC 에 로그인된 프로그램으로 **문서만** 읽는다 (vader/core/ocr/console.py, 2026-10-29 마스터 결정).
-    # 대화를 못 해 기본 AI 가 될 수 없고, 연결하면 '문서 처리' 를 맡는다 (api.documents).
+    # 키 없이 이 PC 에 로그인된 프로그램 (vader/core/ocr/console.py, 2026-10-29 문서 읽기 → 2026-11-27 글 대화도).
+    # 연결하면 '문서 처리' 를 맡고, 대화 확인을 통과한 Claude Code·Codex 는 기본 AI(별)도 될 수 있다. Antigravity 는 문서·대화 모두 닫힘.
     "claude_console": {"service": "Claude Code (로그인)", "model": "sonnet", "keyless": True,
-                       "key_help": "이 PC 에 로그인된 Claude Code 로 문서를 읽어요. API 키 없이 그 계정의 사용량을 써요."},
+                       "models": ["sonnet", "haiku", "opus", "fable"],
+                       "key_help": "이 PC 에 로그인된 Claude Code 로 문서를 읽고 대화해요. API 키 없이 그 계정의 사용량을 써요."},
     "agy_console": {"service": "Antigravity (로그인)", "model": "", "keyless": True,
                     "key_help": "이 PC 에 로그인된 Antigravity CLI 로 문서를 읽어요. API 키 없이 그 계정의 사용량을 써요."},
     "codex_console": {"service": "Codex (로그인)", "model": "", "keyless": True,
-                      "key_help": "이 PC 에 로그인된 Codex 로 문서를 읽어요. API 키 없이 그 계정의 사용량을 써요."},
+                      "key_help": "이 PC 에 로그인된 Codex 로 문서를 읽고 대화해요. API 키 없이 그 계정의 사용량을 써요."},
     "nvidia": {"service": "NVIDIA", "base_url": "https://integrate.api.nvidia.com/v1",
                "model": "nvidia/nemotron-3-super-120b-a12b", "checked_on": "2026-10-14", "daily_limit": 1000,
                "key_help": "build.nvidia.com 에서 API 키 발급"},
@@ -72,7 +73,7 @@ def view() -> dict:
             cards.append({"id": preset_id, "service": preset["service"], "label": preset["service"], "state": "off",
                           "state_text": "미연결", "model": preset["model"], "can": _can_kind(preset_id, preset),
                           "key_help": preset["key_help"], "is_default": False, "recommended": "",
-                          "keyless": bool(preset.get("keyless"))})
+                          "keyless": bool(preset.get("keyless")), "models": preset.get("models", [])})
     return {"cards": cards, "default": default if default in names else None,
             "documents": _safe_choose("extract"), "thinking": _safe_choose("infer")}
 
@@ -97,13 +98,35 @@ def _card(name: str, default) -> dict:
     conn = config.connection_of(name)
     # 도구 호출은 모델마다 다르다 — 이 앱이 확인한 모델에서만 '된다' 고 말한다 (codex1 지적).
     verified = bool(preset and preset.get("checked_on") and preset.get("model") == model)
-    tools = [] if preset_is_sdk(name) else ["대화로 설정 바꾸기" + ("" if verified else " (확인 안 됨)")]
+    tools = [] if preset_is_sdk(name) or _keyless(name) else ["대화로 설정 바꾸기" + ("" if verified else " (확인 안 됨)")]
     return {"id": name, "service": (preset or {}).get("service") or _service(name), "label": label_for(name),
             "state": state, "state_text": text, "model": model, "can": [CAN[r] for r in CAN if factory().supports(r)]
             + tools, "is_default": name == default, "connection": conn, "shared": len(_cards_on(conn)),
             "can_add": state != "off" and not preset_is_sdk(name) and bool(block.get("base_url")),
             "key_help": (preset or {}).get("key_help", ""), "recommended": recommended, "keyless": _keyless(name),
-            "documents": config.get("api.documents") == name}
+            "documents": config.get("api.documents") == name, "can_default": state == "on" and _can_default(name),
+            "models": (preset or {}).get("models", []) if _keyless(name) else [],
+            "usage": _usage(name) if state == "on" else None}
+
+
+def _can_default(name: str) -> bool:
+    """별을 받을 수 있나 — 키 AI 는 연결되면, 로그인 프로그램은 **이 모델로 대화 확인**을 통과했을 때만."""
+    if not _keyless(name):
+        return True
+    block = config.get(f"api.providers.{name}", {}) or {}
+    checked = block.get("checked") or {}
+    return bool(provider_factory(name)().supports("chat") and checked.get("ok") and checked.get("chat")
+                and checked.get("model") == block.get("model"))
+
+
+def _usage(name: str) -> dict | None:
+    """구독 사용량 — Codex 만 공식 수단으로 읽는다. 못 읽으면 None(화면은 '—'). Claude Code 는 안내만."""
+    if name == "claude_console":
+        return {"windows": None, "note": "Claude Code 에서 /usage 로 볼 수 있어요"}
+    if name != "codex_console":
+        return None
+    from vader.core.ocr import console
+    return {"windows": console.codex_limits(), "note": ""}
 
 
 def label_for(name: str) -> str:
@@ -138,10 +161,12 @@ def connect(name: str, key: str | None = None, model: str | None = None, guard=n
         block.pop("keyless", None)
         result = _check_console(name, model)
         block["checked"] = {"ok": result["ok"], "at": datetime.now().isoformat(timespec="seconds"), "model": model,
-                            "message": "" if result["ok"] else result["message"]}
+                            "message": "" if result["ok"] else result["message"], "chat": bool(result.get("chat"))}
         block["model"] = model
         # 새 모델 확인이 실패하면 쓰던 모델을 덮지 않는다 — 같은 모델 재확인 실패만 '조치 필요' (codex1 지적)
-        if result["ok"] or (existing is not None and model == existing.get("model")):
+        # 기본 AI(별)인 카드는 새 모델이 대화 확인까지 통과해야 바꾼다 — 별은 남고 대화만 깨지는 일이 없게
+        usable = result["ok"] and (result.get("chat") or config.get("api.default") != name)
+        if usable or (existing is not None and model == existing.get("model")):
             with guard():
                 _save(name, block, None, documents=result["ok"])
         return {**result, **view()}
@@ -204,8 +229,8 @@ def add_model(source: str, model: str, guard=nullcontext) -> dict:
 
 
 def set_default(name: str) -> dict:
-    if _keyless(name):
-        raise ChoiceError("이 AI 는 대화를 못 해서 기본 AI 가 될 수 없어요. 문서 읽기만 맡아요.")
+    if _keyless(name) and not _can_default(name):
+        raise ChoiceError("이 AI 는 대화 확인을 통과하지 않아 기본 AI 가 될 수 없어요. [연결 확인] 을 다시 눌러 보세요.")
     if name not in _ai_providers() or not _has_key(name):
         raise ChoiceError("연결된 AI 만 기본으로 고를 수 있습니다.")
     data = deepcopy(config.load())
@@ -404,6 +429,8 @@ def preset_is_sdk(name: str) -> bool:
 
 
 def _can_kind(preset_id: str, preset: dict) -> list[str]:
+    if preset.get("keyless"):
+        return [CAN[r] for r in CAN if provider_factory(preset_id)().supports(r)]
     if preset_is_sdk(preset_id):
         return [CAN["extract"], CAN["infer"], CAN["chat"]]
     return [CAN["infer"], CAN["chat"], "대화로 설정 바꾸기"]
@@ -446,10 +473,16 @@ def _check_console(name: str, model: str) -> dict:
     provider = provider_factory(name)(model=model or None)
     if not provider.is_available():
         return {"ok": False, "message": f"이 PC 에 {_service(name).split(' (')[0]} 가 설치되어 있지 않아요."}
-    try:
+    try:   # 문서 읽기 길(JSON 답) 확인 — 대화 확인과 따로 센다 (codex1 next3 ②)
         answer = provider.complete(TEST_PROMPT, str)
     except OcrError as exc:
         return {"ok": False, "message": _short(str(exc))}
     if not isinstance(answer, str):
         return {"ok": False, "message": "답이 왔지만 읽을 수 없는 모양이에요."}
-    return {"ok": True, "message": "연결됐어요. 이제 문서 읽기를 맡아요."}
+    if not provider.supports("chat"):
+        return {"ok": True, "message": "연결됐어요. 이제 문서 읽기를 맡아요."}
+    try:   # 대화 길(도구 없는 글 답) 확인 — 통과해야 기본 AI(별)를 받을 수 있다
+        provider.chat([{"role": "user", "content": TEST_PROMPT}])
+    except OcrError as exc:
+        return {"ok": True, "chat": False, "message": "문서 읽기는 연결됐지만 대화 확인에 실패했어요: " + _short(str(exc))}
+    return {"ok": True, "chat": True, "message": "연결됐어요. 문서 읽기를 맡고, ☆ 기본으로 를 누르면 대화도 맡아요."}

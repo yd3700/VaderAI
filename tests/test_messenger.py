@@ -1046,3 +1046,99 @@ def test_an_oversized_photo_answer_ends_as_broken_not_retried_forever(talking, m
     messenger.sync()
     got = [m for m in messenger.history(people["gana"]["account"]) if m.get("image")]
     assert got[-1]["image"]["state"] == "broken"
+
+
+def test_only_my_sent_plain_messages_in_switched_on_chats_reach_the_assistant(talking, monkeypatch):
+    """비서에게 내 글 보여주기 (2026-11-27, codex1 next3 ①) — 켠 뒤에 전달된 내 일반 글만. 받은 글·대기 글·공유/사진 글·
+    켜기 전 글·끈 대화는 0건. 기다리는 사이 끄면 보내지 않는다. 방에서 나왔다 다시 들어와도 예전 허용이 살아나지 않는다."""
+    import time as _time
+    from vader.core import todo, todo_ai
+    from vader.core.ocr import console
+    from vader.core.ocr.assign import Assignment
+    server, people, be = talking
+    dara, gana = people["dara"]["account"], people["gana"]["account"]
+    be("gana")
+    messenger.send(dara, "OLD-BEFORE-ON")
+    assert messenger.assist_set(f"dm:{dara}", True) == [f"dm:{dara}"]
+    messenger.send(dara, "MINE-내일까지 견적서 보내드릴게요")
+    messenger.send(dara, todo.SHARE_MARK + "MINE-SHARE")
+    be("dara")
+    messenger.sync()
+    messenger.send(gana, "THEIRS-답장")
+    be("gana")
+    messenger.sync()
+    con = db(people["gana"])
+    me_dev = con.execute("SELECT device FROM me").fetchone()[0]
+    now = _time.time()
+    for mid, text, state, device, room in (("q1", "QUEUED-아직", "queued", me_dev, None),
+                                           ("r1", "MINE-ROOM-회의록 정리할게요", "sent", me_dev, "room-1"),
+                                           ("r2", "ROOM-OFF-꺼진방", "sent", me_dev, "room-2")):
+        con.execute("INSERT INTO messages(id, peer, outgoing, text, at, state, device, trusted, room) VALUES (?,?,1,?,?,?,?,1,?)",
+                    (mid, gana if room else dara, messenger._seal(text), now, state, device, room))
+    for rid in ("room-1", "room-2"):
+        con.execute("INSERT INTO rooms(id, state, generation, joined, updated) VALUES (?,?,1,2,?)", (rid, "joined", now))
+    con.commit()
+    messenger.assist_set("room:room-1", True)
+    con.execute("UPDATE messages SET at=? WHERE id='r1'", (_time.time() + 1,))
+    con.commit()
+
+    sent = []
+
+    class Fake:
+        def supports(self, role):
+            return True
+
+        def chat(self, messages):
+            console._still_ok()                     # 로그인 AI 가 차례를 받은 뒤 하는 확인과 같은 자리
+            sent.append(json.dumps(messages, ensure_ascii=False))
+            return json.dumps({"changes": [], "note": ""})
+    monkeypatch.setattr(todo_ai, "resolve", lambda role: Assignment("fake", None, True))
+    monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: Fake())
+    got = todo_ai.propose("이번 주 할 일 정리해줘")
+    assert got["mine"] == {"convs": 2, "messages": 2}
+    blob = sent[0]
+    assert "MINE-내일까지 견적서" in blob and "MINE-ROOM-회의록" in blob
+    for bad in ("OLD-BEFORE-ON", "MINE-SHARE", "THEIRS", "QUEUED", "ROOM-OFF", dara, gana, "room-1"):
+        assert bad not in blob, bad
+
+    class Withdraw(Fake):
+        def chat(self, messages):
+            messenger.assist_set(f"dm:{dara}", False)    # 기다리는 사이 사람이 껐다
+            return super().chat(messages)
+    monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: Withdraw())
+    with pytest.raises(Exception, match="설정이 바뀌어"):
+        with console.checking(lambda: True):
+            todo_ai.propose("다시 정리")
+    assert len(sent) == 1, "끈 뒤에는 아무것도 안 갔다"
+
+    con.execute("UPDATE rooms SET state='ended' WHERE id='room-1'")    # 방에서 나왔다
+    con.commit()
+    assert messenger.assist_list() == []
+    con.execute("UPDATE rooms SET state='joined' WHERE id='room-1'")   # 다시 들어왔다
+    con.commit()
+    assert messenger.assist_list() == [], "예전 허용은 살아나지 않는다"
+
+    messenger.assist_set(f"dm:{dara}", True)                          # 1:1 — 친구가 끊겼다 다시 맺어 관계 번호가 바뀌면 무효
+    con.execute("UPDATE peers SET generation=generation+1 WHERE account=?", (dara,))
+    con.commit()
+    assert messenger.assist_list() == []
+
+
+def test_an_assist_table_from_the_previous_build_migrates_and_its_old_dm_permission_is_dropped(talking):
+    """개발 중 판의 assist_on — 어떤 모양·어느 정리 단계에서 끊겼든 옛 허용은 하나도 안 산다. 새로 켜면 다시 열어도 유지 (codex1 회신 3~5)."""
+    server, people, be = talking
+    dara = people["dara"]["account"]
+    be("gana")
+    con = db(people["gana"])
+    con.execute("DROP TABLE IF EXISTS assist_perm")      # 개발 중 판: 표 이름이 assist_on (gen 열 있거나 없거나, 정리가 끊겼거나)
+    con.execute("CREATE TABLE assist_on (conv TEXT PRIMARY KEY, since REAL NOT NULL, gen INTEGER)")
+    con.execute("INSERT INTO assist_on(conv, since) VALUES (?, 0)", (f"dm:{dara}",))
+    con.execute("INSERT INTO rooms(id, state, generation, joined, updated) VALUES ('room-old', 'joined', 1, 2, 0)")
+    con.execute("INSERT INTO assist_on(conv, since) VALUES ('room:room-old', 0)")   # 재가입한 방에 남은 앞 판 허용
+    con.commit()
+    messenger.friends()                                   # 목록 맞추기 — 예전 표에서 터지지 않는다
+    assert messenger.assist_list() == [], "앞 판의 1:1·방 허용 모두 꺼진다"
+    assert messenger.assist_set(f"dm:{dara}", True) == [f"dm:{dara}"]
+    assert messenger.assist_set("room:room-old", True) == [f"dm:{dara}", "room:room-old"]
+    messenger.friends()
+    assert messenger.assist_list() == [f"dm:{dara}", "room:room-old"], "새로 켠 것은 다음에 열어도 그대로"

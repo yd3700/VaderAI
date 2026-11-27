@@ -118,3 +118,43 @@ def test_a_failed_notice_holds_back_later_notices_to_the_same_person(isolated_se
     assert ("p1", "unshare") not in sent and ("p2", "share") in sent
     todo.flush_shares(send=send)
     assert [s for s in sent if s != "p1-retry" and s[0] == "p1"] == [("p1", "share"), ("p1", "unshare")]
+
+
+def test_a_linked_rune_stays_on_this_pc_and_never_rides_cards_shares_or_exports(isolated_settings, monkeypatch, tmp_path):
+    """카드 ↔ 룬 (2026-11-27) — 연결은 따로 된 표에만. 카드 사전(폰·AI 가 쓰는 것)·공유 글·완료 기록 엑셀에 안 실린다 (codex1 next3 ③)."""
+    from vader.core import todo_archive
+    rune = "rune-test-zq9k7"
+    card = todo.add("TEST 명세서 확인")
+    assert todo.link_rune(card["id"], rune) == {card["id"]: rune}
+    assert rune not in repr(todo.cards()) and all("rune" not in c for c in todo.cards())
+    sent = []
+    monkeypatch.setattr(todo, "_queue", lambda con, to, payload: sent.append(payload))
+    monkeypatch.setattr(todo, "flush_shares", lambda: None)
+    todo.share(card["id"], ["friend-1"])
+    assert sent and rune not in repr(sent)
+    todo.done(card["id"])
+    day = datetime.now().date().isoformat()
+    got = todo_archive.archive(day, day)
+    assert got["total"] == 1 and rune not in repr(got)
+    out = todo_archive.export(tmp_path / "x.xlsx", day, day)
+    import zipfile
+    with zipfile.ZipFile(out["path"]) as z:
+        assert not any(rune.encode() in z.read(n) for n in z.namelist())
+    assert todo.rune_links() == {card["id"]: rune}, "다시 열어도 이 PC 에서는 그대로"
+    assert todo.link_rune(card["id"], "") == {}
+    todo.link_rune(card["id"], rune)
+    todo.delete(card["id"])
+    assert todo.rune_links() == {}, "카드를 지우면 연결도"
+    with pytest.raises(todo.TodoError):
+        todo.link_rune("없는-카드", rune)
+
+
+def test_a_withdrawn_shared_card_takes_its_local_rune_link_with_it(isolated_settings):
+    """받은 카드에 룬을 연결한 뒤 주인이 공유를 거두면 — 연결도 같은 거래로 지운다 (codex1 next3 회신 2 #5)."""
+    import json
+    assert todo.receive_share("owner-1", todo.SHARE_MARK + json.dumps({"op": "share", "id": "s1", "title": "TEST 받은 일", "due": "2026-11-27"}))
+    got = next(c for c in todo.cards() if c["owner"] == "owner-1")
+    todo.link_rune(got["id"], "rune-test")
+    assert todo.receive_share("owner-1", todo.SHARE_MARK + json.dumps({"op": "unshare", "id": "s1"}))
+    assert todo.rune_links() == {}
+    assert todo._db().execute("SELECT count(*) FROM card_runes").fetchone()[0] == 0

@@ -166,6 +166,11 @@ header{height:44px}
 .todo-note{font-size:12px;margin:4px 0 0}
 /* 비서 (2026-11-26) — 목록 아래 대화, 맨 아래 붙는 입력창 하나 */
 .todo #todoAdd{position:sticky;bottom:16px;z-index:3;margin-top:24px;box-shadow:0 10px 28px #000a}
+.todo .todo-rune{min-height:30px;padding:0 10px;gap:6px;font-size:.82rem;max-width:180px}
+.todo .todo-rune span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.todo-rune-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin:12px 0}
+.todo-rune-list .button{justify-content:flex-start;gap:8px}
+.todo-rune-list .button svg,.todo-rune-list .button .sigil{width:22px;height:22px;flex:none}
 .todo-ask{display:inline-flex;align-items:center;gap:6px}.todo-ask svg{width:16px;height:16px}
 .todo-feed{display:grid;gap:20px;margin-top:32px;padding-top:24px;border-top:1px solid var(--line)}
 .todo-turn{display:grid;gap:10px}

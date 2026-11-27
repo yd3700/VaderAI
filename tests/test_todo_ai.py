@@ -15,7 +15,7 @@ def test_ai_proposes_checked_changes_and_only_applied_ones_happen(isolated_setti
     later = (datetime.now() + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
     sent = {}
 
-    def fake_ask(text, now, open_cards):
+    def fake_ask(text, now, open_cards, mine=None):
         sent["titles"] = [c["title"] for c in open_cards]
         return "설명 " + json.dumps({"changes": [
             {"op": "snooze", "ref": "c1", "until": later.strftime("%Y-%m-%dT%H:%M")},
@@ -80,7 +80,7 @@ def test_a_past_question_is_looked_up_on_this_pc_and_the_records_never_reach_the
     today = datetime.now().date()
     sent = {}
 
-    def fake_ask(text, now, open_cards):
+    def fake_ask(text, now, open_cards, mine=None):
         sent["titles"] = [c["title"] for c in open_cards]
         return json.dumps({"changes": [], "note": "단가표를 찾아볼게요",
                            "lookup": {"start": (today - timedelta(days=7)).isoformat(), "end": (today + timedelta(days=30)).isoformat(),
@@ -107,3 +107,29 @@ def test_room_cards_from_others_can_only_be_requested_done_and_never_snoozed(iso
     with pytest.raises(todo_ai.TodoAiError):
         todo_ai.check({"op": "snooze", "card_id": "r1", "mark": todo.mark(card),
                        "until": (now + timedelta(days=1)).isoformat(timespec="minutes")}, by_id, now)
+
+
+def test_the_named_destination_is_the_provider_that_actually_receives_the_question(isolated_settings, monkeypatch):
+    """화면이 보이는 '보낼 AI' 와 실제로 받는 공급자가 같다 — 기본 AI 를 A→B 로 바꾼 뒤에도 (codex1 next3 회신 2 #4)."""
+    from vader.core import ai_choice
+    from vader.core.ocr.assign import Assignment
+    picked, got = {"name": "prov-a"}, []
+
+    class Fake:
+        def __init__(self, name):
+            self.name = name
+
+        def supports(self, role):
+            return True
+
+        def chat(self, messages):
+            got.append(self.name)
+            return json.dumps({"changes": [], "note": ""})
+    monkeypatch.setattr(todo_ai, "resolve", lambda role: Assignment(picked["name"], None, True))
+    monkeypatch.setattr(todo_ai, "provider_factory", lambda name: lambda model=None: Fake(name))
+    monkeypatch.setattr(ai_choice, "label_for", lambda name: f"label-{name}")
+    for name in ("prov-a", "prov-b"):
+        picked["name"] = name
+        assert todo_ai.target() == {"label": f"label-{name}"}
+        todo_ai.propose("정리해줘")
+        assert got[-1] == name

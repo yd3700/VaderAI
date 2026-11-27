@@ -9,7 +9,14 @@ API 키 없이 그 PC 에 설치·로그인된 프로그램을 **화면 없이 �
   사용자 설정/훅 무시) + `--strict-mcp-config` (MCP 없음). Codex 는 read-only 샌드박스·승인 없음·사용자 설정과
   규칙 무시. 둘 다 세션을 디스크에 남기지 않는다. 그림은 임시 폴더에만 두고 바로 지운다.
 - 오류에 CLI 출력 원문을 담지 않는다 — 환자 이름이 섞일 수 있다. 로그인·사용 한도·그 밖으로만 나눈다.
-- 대화(chat)는 하지 않는다 — 문서 읽기·판단만.
+- 대화 (2026-11-27 마스터 결정, codex2 console-ai-chat E 1단계): Claude Code·Codex 는 **글만 주고받는** 무상태 대화도 한다.
+  매번 이력 전체를 표준 입력 한 덩어리로 — CLI 세션을 남기지도 이어 쓰지도 않는다. 도구는 **하나도** 주지 않는다
+  (Claude `--tools ""`, Codex 셸·웹 검색 끔. 2026-11-27 실측: 파일 읽기·셸 요청에 둘 다 '도구 없음').
+  `chat()` 에 tools 인자가 없다 — 그래서 코어의 도구 루프(설정 바꾸기 등)를 타지 않는다. Antigravity 는 대화도 닫는다.
+- 같은 프로그램은 한 번에 하나만 돈다 (프로그램별 차례). 기다리는 대화가 있으면 문서 읽기는 다음 묶음 전에 양보한다.
+  차례를 받은 뒤, 프로그램을 띄우기 **직전에** 화면 잠김·호출한 쪽의 확인(`checking`)을 다시 본다 — 기다리는 사이 잠갔거나
+  허용을 껐으면 보내지 않는다 (codex1 next3 ②·①).
+- API 키·주소 환경 변수는 넘기지 않는다 — 로그인 구독이 아닌 다른 인증·과금 길로 새지 않게 (codex1 next3 ②).
 
 **약관:** 구독 로그인은 본인 사용 용도다. 다른 사람에게 배포해 그쪽 구독으로 돌리게 할지는 두 회사 약관을 확인한 뒤에.
 """
@@ -22,6 +29,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 from vader.core import config
@@ -29,6 +37,78 @@ from vader.core.ocr.base import OcrProviderError, OcrProviderUnavailable
 
 PAGES_PER_CALL = 5
 CALL_TIMEOUT_SECONDS = 600
+CHAT_TIMEOUT_SECONDS = 180        # 대화는 짧게 — 문서 읽기의 600초를 그대로 쓰지 않는다
+CHAT_WAIT_SECONDS = 60            # 같은 프로그램이 문서를 읽는 중이면 이만큼만 기다린다
+CHAT_TOTAL_MAX = 60000           # 이력 예산 (글자). 넘치면 **오래된 대화 턴을 통째로** 뺀다 — 자료(JSON) 메시지를 중간에서 자르지 않는다
+#: 구독 대신 API 로 돌게 만드는 환경 변수 — 자식에게 넘기지 않는다
+_API_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+            "OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_API_KEY")
+
+
+class _Turn:
+    """프로그램 하나의 차례 — 한 번에 하나. 대화가 기다리면 문서 읽기는 새 묶음을 잡지 않고 양보한다."""
+
+    def __init__(self):
+        self._cond, self._busy, self._chats = threading.Condition(), False, 0
+
+    def take(self, chat: bool, timeout: float | None = None) -> bool:
+        with self._cond:
+            self._chats += chat
+            try:
+                ok = self._cond.wait_for(lambda: not self._busy and (chat or not self._chats), timeout)
+                if ok:
+                    self._busy = True
+                return ok
+            finally:
+                self._chats -= chat
+                self._cond.notify_all()
+
+    def give(self) -> None:
+        with self._cond:
+            self._busy = False
+            self._cond.notify_all()
+
+
+_TURNS = {"claude": _Turn(), "codex": _Turn(), "agy": _Turn()}
+_guard = threading.local()
+
+
+def set_alive(check) -> None:
+    """이 스레드의 다음 대화가 '아직 열려 있나' 를 물을 함수. host 가 요청마다 넣는다 (messenger.set_alive 와 같은 모양)."""
+    _guard.alive = check
+
+
+class checking:
+    """`with console.checking(fn):` — 이 안에서 부른 대화는 띄우기 직전에 fn() 이 참일 때만 보낸다. 거짓이면 OcrProviderUnavailable."""
+
+    def __init__(self, fn):
+        self.fn = fn
+
+    def __enter__(self):
+        _guard.checks = [*getattr(_guard, "checks", []), self.fn]
+
+    def __exit__(self, *exc):
+        _guard.checks = getattr(_guard, "checks", [])[:-1]
+
+
+def _still_ok() -> None:
+    alive = getattr(_guard, "alive", None)
+    if alive is not None and not alive():
+        raise OcrProviderUnavailable("잠겨 있어요.")
+    if not all(fn() for fn in getattr(_guard, "checks", [])):
+        raise OcrProviderUnavailable("보내기 전에 설정이 바뀌어 보내지 않았어요. 다시 물어봐 주세요.")
+
+
+class _taken:
+    def __init__(self, client: str, chat: bool):
+        self.turn, self.chat = _TURNS[client], chat
+
+    def __enter__(self):
+        if not self.turn.take(self.chat, CHAT_WAIT_SECONDS if self.chat else None):
+            raise OcrProviderUnavailable("이 프로그램이 문서를 읽는 중이에요. 잠시 뒤에 다시 물어봐 주세요.")
+
+    def __exit__(self, *exc):
+        self.turn.give()
 RENDER_SCALE = 2
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -53,13 +133,19 @@ class ConsoleProvider:
         return "2"   # 격리 플래그·쪽 범위 검사 (codex1 검토)
 
     def supports(self, role: str) -> bool:
-        return role in ("extract", "infer")
+        return role in ("extract", "infer") or (role == "chat" and self._client != "agy")
 
     def is_available(self) -> bool:
         return shutil.which(self._client) is not None
 
-    def chat(self, messages, tools=None):
-        raise OcrProviderUnavailable(f"{self.name()} 는 대화를 하지 않습니다 — 문서 읽기·판단만 합니다.")
+    def chat(self, messages):
+        """글만 주고받는 무상태 대화 — 답은 문자열. tools 인자를 일부러 두지 않는다 (코어 도구 루프 밖)."""
+        if not self.supports("chat"):
+            raise OcrProviderUnavailable(f"{self.name()} 는 대화를 하지 않습니다 — 문서 읽기·판단만 합니다.")
+        text = _transcript(messages)
+        with _taken(self._client, chat=True), tempfile.TemporaryDirectory(prefix="vader-console-chat-") as tmp:
+            _still_ok()                    # 기다리는 사이 잠겼거나 허용이 꺼졌으면 여기서 멈춘다 — 아직 아무것도 안 보냈다
+            return self._ask(text, [], Path(tmp), chat=True)
 
     # ── 읽기 ──
 
@@ -73,7 +159,8 @@ class ConsoleProvider:
                 where = (f"첨부한 그림 {len(batch)}장은 문서 '{path.name}' 의 {start + 1}~{start + len(batch)}쪽이다 "
                          f"(전체 {len(pages)}쪽). 쪽 번호 필드가 있으면 문서 전체 기준 쪽 번호를 쓴다. "
                          "이 쪽들에 해당하는 결과만 낸다.")
-                answer = self._ask(f"{prompt}\n\n{where}\n\n{_format(schema)}", batch, Path(tmp))
+                with _taken(self._client, chat=False):      # 묶음마다 차례를 받는다 — 기다리는 대화가 먼저
+                    answer = self._ask(f"{prompt}\n\n{where}\n\n{_format(schema)}", batch, Path(tmp))
                 if isinstance(answer, list):
                     _check_pages(answer, start + 1, start + len(batch))
                     rows.extend(answer)
@@ -84,12 +171,13 @@ class ConsoleProvider:
             return rows
 
     def complete(self, prompt: str, schema: type) -> object:
-        with tempfile.TemporaryDirectory(prefix="vader-console-ask-") as tmp:
+        with _taken(self._client, chat=False), tempfile.TemporaryDirectory(prefix="vader-console-ask-") as tmp:
             return self._ask(f"{prompt}\n\n{_format(schema)}", [], Path(tmp))
 
     # ── 부르기 ──
 
-    def _ask(self, text: str, images: list[Path], work: Path) -> object:
+    def _ask(self, text: str, images: list[Path], work: Path, chat: bool = False) -> object:
+        """chat 이면 도구 없이 글 하나를 돌려준다. 아니면 답에서 JSON 을 꺼낸다."""
         exe = shutil.which(self._client)
         if not exe:
             raise OcrProviderUnavailable(f"{self._client} 가 이 PC 에 설치되어 있지 않습니다.")
@@ -98,17 +186,18 @@ class ConsoleProvider:
             names = ", ".join(p.name for p in images)
             if images:
                 text = f"이 폴더의 그림 파일 {names} 을 Read 로 차례대로 읽고 답하라.\n\n{text}"
-            args = [exe, "-p", "--output-format", "json", "--tools", "Read", "--allowedTools", "Read", "--restricted",
+            tools = ["--tools", ""] if chat else ["--tools", "Read", "--allowedTools", "Read"]
+            args = [exe, "-p", "--output-format", "json", *tools, "--restricted",
                     "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "dontAsk"] \
                 + (["--model", model] if model else [])
-            out = _run(args, text, work)
+            out = _run(args, text, work, CHAT_TIMEOUT_SECONDS if chat else CALL_TIMEOUT_SECONDS)
             try:
                 envelope = json.loads(out)
             except ValueError:
                 raise OcrProviderError("Claude Code 응답을 읽지 못했습니다") from None
             if envelope.get("is_error"):
                 _raise_for(envelope.get("api_error_status"), str(envelope.get("api_error", "")), "Claude Code")
-            return _json_answer(str(envelope.get("result", "")))
+            return _text_answer(envelope.get("result")) if chat else _json_answer(str(envelope.get("result", "")))
         if self._client == "agy":
             return _ask_agy(exe, model, text, images, work)
         # 묶음마다 새 출력 파일 — 앞 묶음의 답을 다시 읽지 않게 (codex1 지적)
@@ -118,10 +207,12 @@ class ConsoleProvider:
         last.unlink()
         args = [exe, "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
                 "-s", "read-only", "-c", 'approval_policy="never"', "-o", str(last)] \
+            + (["-c", "features.shell_tool=false", "-c", 'web_search="disabled"'] if chat else []) \
             + (["-m", model] if model else []) + [arg for p in images for arg in ("-i", str(p))]
-        _run(args, text, work)
+        _run(args, text, work, CHAT_TIMEOUT_SECONDS if chat else CALL_TIMEOUT_SECONDS)
         try:
-            return _json_answer(last.read_text(encoding="utf-8"))
+            answer = last.read_text(encoding="utf-8")
+            return _text_answer(answer) if chat else _json_answer(answer)
         except OSError:
             raise OcrProviderError("Codex 가 답을 남기지 않았습니다") from None
 
@@ -236,18 +327,51 @@ def _forget_agy(conversation: str) -> None:
             pass
 
 
-def _run(args: list[str], stdin: str, cwd: Path) -> str:
+def _transcript(messages) -> str:
+    """이력 → 표준 입력 한 덩어리. 역할 경계는 JSON 으로 — 본문의 줄바꿈이나 '[system]' 글자로 흉내 내지 못한다 (codex1 next3 ②).
+
+    system 과 마지막 user 메시지는 늘 넣는다. 예산을 넘으면 그 사이의 **오래된 것부터 통째로** 뺀다(중간에서 자르지 않는다).
+    """
+    rows = [{"role": str(m.get("role") if isinstance(m, dict) else getattr(m, "role", "")),
+             "content": str((m.get("content") if isinstance(m, dict) else getattr(m, "content", "")) or "")} for m in messages]
+    rows = [r for r in rows if r["role"] in ("system", "user", "assistant")]
+    if not rows or rows[-1]["role"] != "user":
+        raise OcrProviderError("보낼 말이 없습니다")
+    system = [r for r in rows if r["role"] == "system"]
+    middle = [r for r in rows[:-1] if r["role"] != "system"]
+    size = lambda rs: len(json.dumps(rs, ensure_ascii=False))  # noqa: E731
+    while middle and size(system + middle + rows[-1:]) > CHAT_TOTAL_MAX:
+        middle.pop(0)
+    kept = system + middle + rows[-1:]
+    if size(kept) > CHAT_TOTAL_MAX:
+        raise OcrProviderError("보낼 말이 너무 깁니다")
+    return ("아래 JSON 배열은 대화 기록이다. role 이 system 인 것은 지켜야 할 지시, user·assistant 는 주고받은 말이다.\n"
+            "마지막 user 에게 assistant 로서 보낼 다음 답 하나만, 머리말 없이 글로 쓴다.\n\n"
+            + json.dumps(kept, ensure_ascii=False))
+
+
+def _env() -> dict:
+    return {**{k: v for k, v in os.environ.items() if k.upper() not in _API_ENV}, "NO_COLOR": "1"}
+
+
+def _text_answer(text) -> str:
+    text = str(text or "").strip()
+    if not text:
+        raise OcrProviderError("빈 답이 왔습니다")
+    return text
+
+
+def _run(args: list[str], stdin: str, cwd: Path, timeout: int = CALL_TIMEOUT_SECONDS) -> str:
     try:
         proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                encoding="utf-8", errors="replace", cwd=cwd, creationflags=NO_WINDOW,
-                                env={**os.environ, "NO_COLOR": "1"})
+                                encoding="utf-8", errors="replace", cwd=cwd, creationflags=NO_WINDOW, env=_env())
     except OSError:
         raise OcrProviderUnavailable("프로그램을 실행하지 못했습니다") from None
     try:
-        out, err = proc.communicate(stdin, timeout=CALL_TIMEOUT_SECONDS)
+        out, err = proc.communicate(stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_tree(proc)
-        raise OcrProviderError(f"{CALL_TIMEOUT_SECONDS}초 안에 답하지 않았습니다") from None
+        raise OcrProviderError(f"{timeout}초 안에 답하지 않았습니다") from None
     if proc.returncode:
         status = None
         try:   # Claude Code 는 실패해도 JSON 봉투를 낸다
@@ -345,3 +469,85 @@ def _json_answer(text: str) -> object:
             except ValueError:
                 pass
     raise OcrProviderError("답에서 JSON 을 찾지 못했습니다")
+
+
+# ── 사용량 (Codex 만) ──
+# 공식 `codex app-server` 의 account/rateLimits/read (codex2 B, 2026-11-27 실측). 토큰·자격 증명 파일은 읽지 않는다 — CLI 가 자기 로그인을 쓴다.
+# 창 이름은 windowDurationMins 로만 붙이고, 값이 없으면 없는 대로(0% 로 채우지 않는다). 60초 동안은 지난 값을 다시 쓴다.
+# Claude Code 는 밖에서 읽을 공식 수단을 못 찾았다 — 화면에 '—' 와 /usage 안내.
+LIMITS_TTL = 60
+_limits = {"at": 0.0, "value": None, "gen": 0, "reading": False}
+_limits_lock = threading.Lock()      # 짧게만 잡는다 — 프로그램을 부르는 동안에는 안 잡는다 (화면 잠금이 기다리지 않게, codex1 회신 2 #2)
+
+
+def forget_limits() -> None:
+    """화면 잠금·연결 끊기 때 — 지난 값을 버리고, 지금 읽는 중인 답도 버리게 세대를 올린다."""
+    with _limits_lock:
+        _limits.update(at=0.0, value=None, gen=_limits["gen"] + 1)
+
+
+def codex_limits() -> list[dict] | None:
+    """[{"window_mins", "used_percent", "resets_at"}…] 또는 None(못 읽음). 이 PC 의 codex 가 없으면 None.
+    다른 스레드가 읽는 중이면 기다리지 않고 지난 값."""
+    import time
+    with _limits_lock:
+        if _limits["reading"] or time.time() - _limits["at"] < LIMITS_TTL:
+            return _limits["value"]
+        _limits["reading"], gen = True, _limits["gen"]
+    value = None
+    try:
+        value = _read_codex_limits()
+    except Exception:  # noqa: BLE001 — 사용량은 덤이다. 업무를 막지 않는다
+        value = None
+    finally:
+        with _limits_lock:
+            _limits["reading"] = False
+            if _limits["gen"] == gen:        # 읽는 사이 잠갔으면 이 답은 버린다
+                _limits.update(at=time.time(), value=value)
+            else:
+                value = None
+    return value
+
+
+def _read_codex_limits(timeout: float = 15) -> list[dict] | None:
+    exe = shutil.which("codex")
+    if not exe:
+        return None
+    proc = subprocess.Popen([exe, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW, env=_env(),
+                            cwd=tempfile.gettempdir())
+    found: list = []
+
+    def talk():
+        def send(o):
+            proc.stdin.write(json.dumps(o) + "\n")
+            proc.stdin.flush()
+        send({"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "vaderai", "version": "1"}}})
+        for line in proc.stdout:
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            if m.get("id") == 1:
+                if "result" not in m:
+                    return
+                send({"method": "initialized"})
+                send({"id": 2, "method": "account/rateLimits/read"})
+            elif m.get("id") == 2:
+                found.append((m.get("result") or {}).get("rateLimits") or {})
+                return
+    reader = threading.Thread(target=talk, daemon=True)
+    reader.start()
+    reader.join(timeout)
+    if proc.poll() is None:
+        _kill_tree(proc)
+    if not found:
+        return None
+    out = []
+    for key in ("primary", "secondary"):
+        w = found[0].get(key)
+        if isinstance(w, dict) and isinstance(w.get("usedPercent"), (int, float)):
+            mins, at = w.get("windowDurationMins"), w.get("resetsAt")
+            out.append({"window_mins": mins if isinstance(mins, int) else None, "used_percent": w["usedPercent"],
+                        "resets_at": at if isinstance(at, (int, float)) else None})
+    return out or None

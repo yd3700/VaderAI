@@ -276,6 +276,10 @@ def test_a_logged_in_console_takes_documents_without_a_key_and_never_becomes_the
 
     monkeypatch.setattr(console.shutil, "which", lambda name: f"C:/bin/{name}.cmd")
     monkeypatch.setattr(console.ConsoleProvider, "complete", lambda self, prompt, schema: "OK")
+
+    def no_chat(self, messages):
+        raise OcrProviderUnavailable("대화 확인 실패")
+    monkeypatch.setattr(console.ConsoleProvider, "chat", no_chat)
     ai_choice.migrate()
     default = config.get("api.default")
     result = ai_choice.connect("claude_console")
@@ -292,9 +296,41 @@ def test_a_logged_in_console_takes_documents_without_a_key_and_never_becomes_the
     assert config.get("api.providers.claude_console.model") == "sonnet"
     assert config.get("api.providers.claude_console.checked.ok") is True
     with pytest.raises(ai_choice.ChoiceError, match="기본 AI 가 될 수 없"):
-        ai_choice.set_default("claude_console")
+        ai_choice.set_default("claude_console")   # 대화 확인을 통과하지 못했다
     monkeypatch.setattr(console.shutil, "which", lambda name: None)       # 프로그램이 사라졌다
     with pytest.raises(OcrProviderUnavailable, match="문서 읽기를 맡은"):
         choose("extract")
     ai_choice.disconnect("claude_console")
     assert config.get("api.documents") is None
+
+
+def test_a_logged_in_console_that_passes_the_chat_check_can_take_the_star(old_pc, answers, monkeypatch):
+    """대화 확인까지 통과하면 별(기본 AI) — 판단·대화가 그쪽으로. 문서 읽기 담당은 따로 그대로. 모델을 바꾸면 다시 확인 전."""
+    from vader.core.ocr import console
+
+    monkeypatch.setattr(console.shutil, "which", lambda name: f"C:/bin/{name}.cmd")
+    monkeypatch.setattr(console.ConsoleProvider, "complete", lambda self, prompt, schema: "OK")
+    monkeypatch.setattr(console.ConsoleProvider, "chat", lambda self, messages: "네")
+    monkeypatch.setattr(console, "codex_limits", lambda: [{"window_mins": 300, "used_percent": 7, "resets_at": None}])
+    ai_choice.migrate()
+    result = ai_choice.connect("codex_console")
+    card = next(c for c in result["cards"] if c["id"] == "codex_console")
+    assert card["can_default"] and "대화" in card["can"] and not any("설정 바꾸기" in x for x in card["can"])
+    assert card["usage"]["windows"][0]["used_percent"] == 7
+    ai_choice.set_default("codex_console")
+    assert choose("chat") == "codex_console" and choose("infer") == "codex_console"
+    assert choose("extract") == "codex_console" and config.get("api.documents") == "codex_console"
+    monkeypatch.setattr(console.ConsoleProvider, "chat", lambda self, messages: (_ for _ in ()).throw(OcrProviderUnavailable("x")))
+    ai_choice.connect("codex_console")                  # 같은 모델 재확인 — 문서는 통과, 대화는 실패
+    with pytest.raises(OcrProviderUnavailable, match="대화 확인"):
+        choose("chat")                                  # 별이 남아도 대화에는 고르지 않는다
+    assert choose("extract") == "codex_console", "문서 읽기는 그대로"
+    monkeypatch.setattr(console.ConsoleProvider, "chat", lambda self, messages: "네")
+    ai_choice.connect("codex_console")
+    monkeypatch.setattr(console.ConsoleProvider, "chat", lambda self, messages: (_ for _ in ()).throw(OcrProviderUnavailable("x")))
+    ai_choice.connect("codex_console", model="gpt-다른모델")
+    assert config.get("api.providers.codex_console.model") == "", "별을 단 카드는 대화가 안 되는 새 모델로 바꾸지 않는다"
+    ai_choice.set_default("gemini")
+    ai_choice.connect("codex_console", model="gpt-다른모델")
+    card = next(c for c in ai_choice.view()["cards"] if c["id"] == "codex_console")
+    assert card["model"] == "gpt-다른모델" and not card["can_default"], "새 모델은 대화 확인을 다시 통과해야 별을 받는다"

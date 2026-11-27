@@ -17,6 +17,9 @@
 저장: 계정 작업공간 `messenger.sqlite3`. 본문과 세션 상태는 계정 금고(DPAPI)의 무작위 키로 암호화한다.
 같은 Windows 사용자로 도는 프로그램까지 막지는 못한다 (2a 와 같은 고지).
 본문을 로그·오류 문장·화면 도움말 대화·MCP 로 내보내지 않는다 (codex1 P1-7). 받은 본문은 명령·AI 입력으로 쓰지 않는다.
+**내가 보낸 글**만 예외 하나 (2026-11-27 마스터 결정, codex1 next3 ①): 사람이 대화마다 켠 [비서에게 내 글 보여주기] 뒤에
+이 기기에서 보내 **전달된**(sent) 내 일반 글만, 할 일 [비서에게 묻기] 를 누를 때 기본 AI 로 간다 (`assist_mine`).
+받은 글·공유 글·사진 글·대화 이름·상대 이름은 가지 않는다. 일반 대화·문서 읽기·MCP 에는 붙지 않는다.
 """
 from __future__ import annotations
 
@@ -74,6 +77,8 @@ CREATE TABLE IF NOT EXISTS room_members (room TEXT NOT NULL, account TEXT NOT NU
 CREATE TABLE IF NOT EXISTS room_outbox (client_id TEXT PRIMARY KEY, sender TEXT NOT NULL, room TEXT NOT NULL,
   generation INTEGER NOT NULL, copies TEXT NOT NULL, attachment TEXT, created REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS room_seen (room TEXT PRIMARY KEY, seq INTEGER NOT NULL);
+DROP TABLE IF EXISTS assist_on;
+CREATE TABLE IF NOT EXISTS assist_perm (conv TEXT PRIMARY KEY, since REAL NOT NULL, gen INTEGER);
 """
 #: 앞선 판의 표에 더한 열 (사진, 2026-11-25) — CREATE TABLE IF NOT EXISTS 는 있는 표에 열을 더하지 않는다
 _COLUMNS = (("outbox", "attachment", "TEXT"), ("peers", "features", "TEXT"),
@@ -81,6 +86,8 @@ _COLUMNS = (("outbox", "attachment", "TEXT"), ("peers", "features", "TEXT"),
             ("messages", "room", "TEXT"), ("messages", "server_at", "REAL"), ("messages", "room_seq", "INTEGER"),
             ("messages", "recipients", "TEXT"), ("messages", "missed", "TEXT"),
             ("image_pending", "room", "TEXT"), ("image_ack", "room", "TEXT"))
+# 비서에게 내 글 허용은 assist_perm 에만 (codex1 회신 5) — 개발 중 판의 assist_on 은 어느 가입·관계 때 켠 것인지 입증할 수 없어
+# 옮기지 않고 버린다. 새 표 이름이라 열 더하기·정리 순서가 중간에 끊겨도 옛 허용이 살아날 길이 없다.
 FEATURES = ["image1", "room1"]       # 이 앱이 받을 수 있다고 서버에 알리는 형식 — room1: 방 글
 
 
@@ -416,6 +423,7 @@ def _remember(con, listed: list[dict]) -> None:
         for row in con.execute("SELECT account FROM peers").fetchall():
             if row["account"] not in seen:
                 con.execute("UPDATE peers SET state='ended' WHERE account=?", (row["account"],))
+        drop_assist(con)
 
 
 def _list(con) -> list[dict]:
@@ -917,6 +925,101 @@ def _decrypt(con, me, known, m):
         return session, plain, True
     except Exception:
         return None
+
+
+# ── 비서에게 내 글 보여주기 (2026-11-27) ──
+# conv: 'dm:<상대 계정>' / 'room:<방>'. 켠 때(since) 뒤에 쓴 글만. 끄면 줄이 지워지고, 다시 켜면 새 since 부터.
+# 허용은 그 관계 동안만 (codex1 회신 2 #1): 친구 목록·방 목록을 맞출 때(_remember·rooms.store) 친구가 아니거나 방에 없으면
+# 바로 지운다 — 다시 들어오려면 이 PC 가 초대를 받거나 친구 신청을 주고받아야 하니 그 사이 목록을 맞춘다.
+# 1:1 은 친구 관계 번호(generation)도 붙잡는다 — 끊겼다 다시 맺어 번호가 바뀌면 예전 허용은 무효.
+ASSIST_DAYS = 3
+ASSIST_MAX = 40          # 모든 대화를 합친 건수
+ASSIST_EACH = 300        # 한 건 글자 (공유·사진 글을 뺀 **뒤에** 자른다)
+ASSIST_TOTAL = 6000      # 모든 대화를 합친 글자
+
+
+def _conv_ok(con, conv: str, gen=None) -> bool:
+    kind, _, key = conv.partition(":")
+    if kind == "dm":
+        p = con.execute("SELECT state, generation FROM peers WHERE account=?", (key,)).fetchone()
+        return bool(p and p["state"] == "accepted" and (gen is None or p["generation"] == gen))
+    if kind == "room":
+        r = con.execute("SELECT state FROM rooms WHERE id=?", (key,)).fetchone()
+        return bool(r and r["state"] == "joined")
+    return False
+
+
+def drop_assist(con) -> None:
+    """관계가 끝난 대화의 허용을 지운다 — 목록을 맞출 때마다 (같은 거래 안에서 불러도 된다)."""
+    for r in con.execute("SELECT conv, gen FROM assist_perm").fetchall():
+        # 1:1 인데 관계 번호가 없다(앞 판에서 켠 것) — 어느 관계 때 켰는지 입증할 수 없으니 끈다
+        if (r["conv"].startswith("dm:") and r["gen"] is None) or not _conv_ok(con, r["conv"], r["gen"]):
+            con.execute("DELETE FROM assist_perm WHERE conv=?", (r["conv"],))
+
+
+def _assist_rows(con) -> dict[str, float]:
+    drop_assist(con)
+    return {r["conv"]: r["since"] for r in con.execute("SELECT conv, since FROM assist_perm")}
+
+
+def assist_list() -> list[str]:
+    with _one() as con:
+        return sorted(_assist_rows(con))
+
+
+def assist_set(conv: str, on: bool) -> list[str]:
+    conv = str(conv or "")
+    with _one() as con:
+        if on:
+            if not _conv_ok(con, conv):
+                raise MessengerError("친구이거나 들어가 있는 방만 켤 수 있어요.")
+            p = con.execute("SELECT generation FROM peers WHERE account=?", (conv[3:],)).fetchone() if conv.startswith("dm:") else None
+            con.execute("INSERT OR REPLACE INTO assist_perm(conv, since, gen) VALUES (?,?,?)", (conv, time.time(), p["generation"] if p else None))
+        else:
+            con.execute("DELETE FROM assist_perm WHERE conv=?", (conv,))
+        return sorted(_assist_rows(con))
+
+
+def assist_mine(now: float | None = None) -> dict:
+    """켠 대화에서 내가 보낸 글 — 최근 것부터 상한까지. {"messages":[{conv: r1…, at, text}], "convs", "since": {conv: since}}.
+    conv 는 임시 번호(r1…)뿐이다. 'since' 는 보내기 직전 다시 확인(assist_still)에 쓴다 — 화면·AI 로는 안 간다."""
+    from vader.core.todo import SHARE_MARK
+    now = now or time.time()
+    with _one() as con:
+        rows = _assist_rows(con)
+        if not rows:
+            return {"messages": [], "convs": 0, "since": rows}
+        found = []
+        for conv, since in rows.items():
+            kind, _, key = conv.partition(":")
+            where = "m.room IS NULL AND m.peer=?" if kind == "dm" else "m.room=?"
+            # outgoing=1 은 이 PC 가 보낼 때만 생긴다(받기는 늘 0) — 1:1 의 device 칸은 받는 기기라 거르는 데 쓰지 않는다
+            for r in con.execute(f"""SELECT m.text, m.at FROM messages m WHERE {where} AND m.outgoing=1 AND m.state='sent'
+                    AND m.text IS NOT NULL AND m.at>=? AND m.at>=? ORDER BY m.at DESC LIMIT ?""",
+                                 (key, since, now - ASSIST_DAYS * 86400, ASSIST_MAX)):
+                text = _unseal(r["text"])
+                if text.startswith(SHARE_MARK) or text.startswith(messenger_image.MARK) or messenger_image.parse(text) is not None:
+                    continue                      # 앱끼리의 자료 — 자르기 **전에** 뺀다
+                found.append((r["at"], conv, text.strip()[:ASSIST_EACH]))
+    found.sort(reverse=True)
+    out, total, labels = [], 0, {}
+    for at, conv, text in found[:ASSIST_MAX]:
+        if not text or total + len(text) > ASSIST_TOTAL:
+            continue
+        total += len(text)
+        label = labels.setdefault(conv, f"r{len(labels) + 1}")
+        out.append({"conv": label, "at": time.strftime("%Y-%m-%dT%H:%M", time.localtime(at)), "text": text})
+    out.reverse()                                 # 오래된 것부터 읽히게
+    return {"messages": out, "convs": len(labels), "since": {c: rows[c] for c in labels}}
+
+
+def assist_still(since: dict[str, float]) -> bool:
+    """모은 뒤 실제로 보내기 직전 — 그 대화들이 아직 같은 허용(같은 since)으로 켜져 있나. 기다리는 사이 끄면 거짓."""
+    if not since:
+        return True
+    with _one() as con:
+        rows = _assist_rows(con)
+    return all(rows.get(c) == s for c, s in since.items())
 
 
 # ── 기록 ──

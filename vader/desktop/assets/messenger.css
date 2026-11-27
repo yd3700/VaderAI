@@ -149,3 +149,11 @@ body.msg-open{grid-template-columns:72px minmax(0,1fr) 380px}
 .msg-room-warn{padding:10px 12px;border:1px solid #ffb35d59;border-radius:10px;background:#ffb35d0d;color:#ffcf9c;font-size:13px;line-height:1.6}
 .msg-from{display:block;margin:0 0 3px 2px;font-size:11px;color:var(--muted)}
 .msg-resend{margin-top:4px;font-size:12px}
+/* 비서에게 내 글 보여주기 (2026-11-27) — 대화마다 스위치 하나 */
+.msg-assist{display:grid;gap:6px;margin:4px 0 10px}
+.msg-assist-switch{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:10px 12px;background:none;border:1px solid var(--line);border-radius:8px;color:var(--text);font-size:13px;text-align:left}
+.msg-assist-switch:hover{border-color:#687386}
+.msg-assist-switch .toggle{flex:none;pointer-events:none}
+.msg-assist-switch[aria-checked=true]{border-color:#a13743}
+.msg-assist-switch[aria-checked=true] .toggle{background:#d32639}
+.msg-assist-switch[aria-checked=true] .toggle span{transform:translateX(18px)}
