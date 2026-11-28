@@ -6,6 +6,13 @@ const raw = s => '<span data-raw>'+esc(s)+'</span>';
 // texts: 룬이 쓴 **원문**. 끼인 값(한국어 파일명)은 규칙이 걸렸으면 문제가 아니다 (codex1 1차 협의·후속 P2)
 const runeLangNote = (id,...texts) => VaderI18n.lang==='en'&&(!VaderI18n.hasRune(id)||texts.some(s=>s!=null&&!VaderI18n.runeHit(id,s)))?'<p class="small muted">'+T('룬 원문 언어: 한국어')+'</p>':'';
 const T = (s,...a) => VaderI18n.t(s,...a);
+// 진단판 (2026-11-28) — 화면 스크립트 오류는 위치만 이 PC 의 .vaderai\crash\events.txt 에. 화면이 멈춘 이유를 다른 PC 에서도 알 수 있게
+// 오류 문장은 보내지 않는다 — 오류 이름(TypeError 등)과 스크립트 위치만. 코어가 정해진 모양만 남긴다 (codex1 diag 회신 1)
+const DIAG_AT=/(?:app|messenger|chat|i18n|i18n-en|visuals|icons|live-logs|gate|badge)\.js:\d{1,6}:\d{1,6}/,DIAG_NAMES=['Error','TypeError','ReferenceError','RangeError','SyntaxError','URIError','EvalError','AggregateError'];
+const diagUi=(kind,where,name)=>{try{const at=String(where||'').match(DIAG_AT)?.[0]||(where==='core'?'core':''),nm=DIAG_NAMES.includes(name)?name:'';   // 화면에서도 정해진 모양만 골라 보낸다
+ window.pywebview?.api?.call('diag_ui',{kind,where:at,name:nm}).catch(()=>{});}catch{}};
+window.addEventListener('error',e=>diagUi('error',(e.filename||'').split('/').pop()+':'+e.lineno+':'+e.colno,e.error?.name));
+window.addEventListener('unhandledrejection',e=>diagUi('rejection',(e.reason?.stack||'').split('\n')[1]||'',e.reason?.name));
 const state = {dismissed:new Set(),page:'core', task:null, job:null, jobs:[], dryRun:true, startPage:1,
   motion:matchMedia('(prefers-reduced-motion: reduce)').matches, busy:false, connected:false, failures:[]};
 let taskRunes = {}, pendingDrop = null, toastTimer, lastSnapshot = '', settingsRune = null, polling = false;
@@ -552,10 +559,10 @@ function bindDrop() {
  zone.onclick=choose;zone.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}};
  vortex.on=false;vortex.gone=0;
  const swirl=on=>{vortex.on=on&&!state.busy;stage.classList.toggle('dragging',vortex.on);zone.classList.toggle('dragging',vortex.on);animateGraph();};
- stage.ondragenter=e=>{e.preventDefault();if(!depth++)swirl(true);};
+ stage.ondragenter=e=>{e.preventDefault();if(!diagUi.drag){diagUi.drag=1;diagUi('drag_enter','core');}if(!depth++)swirl(true);};
  stage.ondragover=e=>{e.preventDefault();e.dataTransfer.dropEffect='copy';};
  stage.ondragleave=()=>{if(--depth<=0){depth=0;swirl(false);}};
- stage.ondrop=e=>{e.preventDefault();depth=0;swirl(false);if(state.busy)return;
+ stage.ondrop=e=>{e.preventDefault();depth=0;swirl(false);diagUi('drop','core');if(state.busy)return;
   vortex.gone=state.motion?0:.001;stage.classList.add('dropped');animateGraph();
   pendingDrop={...intent(),at:Date.now()};
   // 실행이 시작되면 화면이 바뀐다. 경로를 못 받아 그대로 남으면 그래프를 되돌린다.
@@ -563,16 +570,18 @@ function bindDrop() {
 }
 async function poll() {
  try {
-  const jobs=await api('poll');const reconnected=!state.connected;state.connected=true;$('#connectionStatus').textContent='앱 연결됨';
-  const snapshot=JSON.stringify(jobs);
-  if(snapshot!==lastSnapshot||reconnected) {
+  let jobs;try{jobs=await api('poll');}catch(e){state.connected=false;logTerminal.setConnected(false);$('#connectionStatus').textContent='연결 확인 필요 · 다시 연결 중';return;}
+  const reconnected=!state.connected;state.connected=true;$('#connectionStatus').textContent='앱 연결됨';
+  const snapshot=JSON.stringify(jobs);poll.undo={snap:lastSnapshot,job:state.job,jobs:state.jobs};
+  const full=reconnected||poll.redraw;   // 재연결·그리기 재시도 회차는 로그만 갱신하지 않고 화면 전체를 다시 그린다 (codex1 diag 회신 3)
+  if(snapshot!==lastSnapshot||full) {poll.redraw=false;
    lastSnapshot=snapshot;state.jobs=jobs;railBadge();
    const previous=state.job;state.job=jobs.find(j=>j.id===previous?.id)||jobs[0]||null;
    if(state.job?.request?.id!==previous?.request?.id&&state.job?.request)$('#announcer').textContent=VaderI18n.rune(state.job.rune_id,state.job.request.prompt);
    if(state.page==='run'&&state.job?.terminal&&!previous?.terminal)navigate('result');
    else if(['run','result'].includes(state.page)) {
     const withoutLogs=j=>j?{...j,logs:null}:null;
-    if(!reconnected&&logTerminal.element.isConnected&&JSON.stringify(withoutLogs(previous))===JSON.stringify(withoutLogs(state.job))){
+    if(!full&&logTerminal.element.isConnected&&JSON.stringify(withoutLogs(previous))===JSON.stringify(withoutLogs(state.job))){
      logTerminal.mount(logTerminal.element,state.job);
     }else{
     // Do not erase a user's correction while progress/log events arrive.
@@ -581,7 +590,11 @@ async function poll() {
     }
    }
   }
- } catch(e) {state.connected=false;logTerminal.setConnected(false);$('#connectionStatus').textContent='연결 확인 필요 · 다시 연결 중';}
+ } catch(e) {   // 여기까지 온 것은 연결이 아니라 화면 그리기 오류 — 그대로 보이고 위치를 진단 기록에
+  if(poll.undo){lastSnapshot=poll.undo.snap;state.job=poll.undo.job;state.jobs=poll.undo.jobs;}   // 다음 poll 이 같은 응답을 다시 그리게(끝난 작업 넘김 포함)
+  poll.redraw=true;   // 연결 상태와 따로 — 재연결 직후 그리기가 실패해도 다음 poll 이 다시 그린다 (codex1 diag 회신 2)
+  if(!poll.seen){poll.seen=1;diagUi('render',(e.stack||'').split('\n')[1]||'',e.name);}
+  $('#connectionStatus').textContent=T('화면 오류 · 진단 기록에 남겼어요');}
  finally {setTimeout(poll,400);}
 }
 // 자동 업데이트 — 뒤에서 받는 동안만 머리띠에 보인다. 받아 두면 창을 닫을 때 바뀐다 (vader/core/update.py).

@@ -24,6 +24,8 @@ def pc(monkeypatch):
     (home / "seals.json").write_text("{}", encoding="utf-8")
     (home / "devices.json").write_text("{}", encoding="utf-8")
     (home / "crash").mkdir()
+    (home / "crash-raw").mkdir()                                     # 진단 원본(절대 경로가 섞임) — 기기 층에 남아야 다음 시작에 정리된다
+    (home / "crash-raw" / "native_raw_x.txt").write_text("raw", encoding="utf-8")
     (home / "catalog").mkdir()
     for name in ("state.json", "blocked.json", "origins.json", "managed.json"):
         (home / "catalog" / name).write_text("{}", encoding="utf-8")
@@ -46,7 +48,7 @@ def finished(home, folder):
     assert (folder / "runes" / "eonm" / "__init__.py").exists() and (folder / "jobs").is_dir()
     assert (folder / "seals.json").exists() and (folder / "catalog" / "origins.json").exists()
     assert (folder / "catalog" / "managed.json").exists()
-    for kept in ("crash", "devices.json", "catalog/state.json", "catalog/blocked.json"):   # 기기 층·옛 연결은 남는다
+    for kept in ("crash", "crash-raw/native_raw_x.txt", "devices.json", "catalog/state.json", "catalog/blocked.json"):   # 기기 층·옛 연결은 남는다
         assert (home / kept).exists(), kept
     aside = next(folder.glob(".before-claim-*"))                    # 계정 쪽에 있던 것은 지우지 않고 비켜 둔다
     assert (aside / "runes" / "eonm").is_dir() and (aside / "settings.json").exists()

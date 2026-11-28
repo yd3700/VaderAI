@@ -29,7 +29,7 @@ from pathlib import Path
 from vader.core import account, config, gate
 
 #: 기기 층 — 옮기지 않는다.
-DEVICE = {"accounts", "crash", "catalog", "device.json", "device-secrets.json", "session.json", "claim.json",
+DEVICE = {"accounts", "crash", "crash-raw", "catalog", "device.json", "device-secrets.json", "session.json", "claim.json",
           "devices.json", "app.lock"}
 ACCOUNT_CATALOG = ("managed.json", "origins.json")
 LEDGER_VERSION = 1

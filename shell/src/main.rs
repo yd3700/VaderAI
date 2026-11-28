@@ -203,6 +203,12 @@ fn main_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
                 let l = p.to_logical::<f64>(scale);
                 (l.x, l.y)
             };
+            if matches!(ev, DragDropEvent::Enter { .. }) && !DRAG_SEEN.swap(true, Ordering::SeqCst) {
+                diag("drag_enter"); // Windows 가 이 창에 끌기를 넘겨줬다 — 안 남으면 권한·정책이 막는 것
+            }
+            if let DragDropEvent::Drop { paths, .. } = ev {
+                diag(&format!("drop files={}", paths.len()));
+            }
             let js = match ev {
                 DragDropEvent::Enter { position, .. } | DragDropEvent::Over { position } => {
                     let (x, y) = at(position);
@@ -306,9 +312,12 @@ fn spawn_worker(app: AppHandle) -> Result<Arc<Worker>, Box<dyn std::error::Error
         }
         // stdout 이 닫혔다 — 기다리는 호출부터 끝내고(자식이 아직 살아 있어도), 그다음 자식을 기다린다
         w.die();
-        let exited_ok = child.wait().map(|s| s.success()).unwrap_or(false);
+        let status = child.wait().ok();
+        let exited_ok = status.map(|s| s.success()).unwrap_or(false);
+        let code = status.and_then(|s| s.code()).map(|c| format!("0x{:08X}", c as u32)).unwrap_or_else(|| "?".into());
         if !w.exiting.load(Ordering::SeqCst) {
-            message("VaderAI 내부 작업자가 멈췄어요. 앱을 다시 켜 주세요.");
+            diag(&format!("worker_exit code={code}"));
+            message(&format!("VaderAI 내부 작업자가 멈췄어요 (코드 {code}). 앱을 다시 켜 주세요.\n다시 켜면 진단 기록이 %USERPROFILE%\\.vaderai\\crash 에 정리돼요."));
         }
         // 일꾼이 안전하게 끝냈다고(작업·콘솔까지) 알리고 정상 종료했을 때만 받아 둔 업데이트를 건다 (codex1 Rust r2 P2-5)
         if w.safe.load(Ordering::SeqCst) && exited_ok {
@@ -536,6 +545,25 @@ fn relaunched_as_admin() -> bool {
     }
     true
 }
+
+/// 진단판 (2026-11-28) — 이 PC 의 `%USERPROFILE%\.vaderai\crash\shell_events.txt` 에 한 줄. 업무 내용·경로는 쓰지 않는다.
+/// 창이 Windows 로부터 끌기를 받았는지(권한 차이로 막히면 안 온다), 일꾼이 어떤 코드로 끝났는지를 남긴다.
+fn diag(line: &str) {
+    use std::io::Write as _;
+    let Ok(home) = std::env::var("USERPROFILE") else { return };
+    let dir = std::path::Path::new(&home).join(".vaderai").join("crash");
+    let _ = std::fs::create_dir_all(&dir);
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let path = dir.join("shell_events.txt"); // 셸 몫만 — 화면 알림(ui_events.txt)과 같은 파일을 두 프로세스가 같이 쓰지 않는다
+    if std::fs::metadata(&path).map(|m| m.len() > 128 * 1024).unwrap_or(false) {
+        let _ = std::fs::rename(&path, dir.join("shell_events.old")); // 한 번 돌린다
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "unix:{secs} shell {line}");
+    }
+}
+
+static DRAG_SEEN: AtomicBool = AtomicBool::new(false);
 
 fn message(text: &str) {
     use windows::core::HSTRING;

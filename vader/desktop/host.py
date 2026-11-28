@@ -12,7 +12,7 @@ from threading import Lock, Thread
 from vader.core.checkpoint import CheckpointStore
 from vader.core.runner import JobRunner
 from vader import __version__
-from vader.core import account, config, conversation, gate, journal, messenger, messenger_rooms, phone, publisher, signing, todo, todo_ai, todo_archive, update
+from vader.core import account, config, conversation, diag, gate, journal, messenger, messenger_rooms, phone, publisher, signing, todo, todo_ai, todo_archive, update
 from vader.core import screen as screen_auto   # 화면 자동화 엔진 중개 (agent-desktop)
 from vader.core import screen_broker
 from vader.core.ocr import console as console_ai   # 로그인된 Claude Code·Codex 대화 — 잠기면 보내지 않는다
@@ -212,6 +212,7 @@ class DesktopAPI:
                 'todo_runes': todo.rune_links,     # 카드 ↔ 룬 — 이 PC 에만 (폰·공유·AI 로 안 간다)
                 'todo_link_rune': self._todo_link_rune,
                 'todo_rune_opened': todo.rune_opened,   # 효과 재기 — 이 PC 에만 센다
+                'diag_ui': diag.ui,                # 화면 오류·끌기 수신 — 이 PC 에만 (진단판 2026-11-28)
                 'todo_ai_target': todo_ai.target,  # 보낼 AI 이름 — 보내기 전에 화면에
                 'todo_propose': todo_ai.propose,   # 말로 정리 — 제안만, 바꾸지 않는다
                 'todo_apply': todo_ai.apply,       # 사람이 [적용] 을 누른 제안만

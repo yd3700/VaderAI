@@ -299,6 +299,8 @@ def main():
     from vader.core.crash import install_exception_hooks
     from vader.desktop import host
     install_exception_hooks()
+    from vader.core import diag
+    diag.start()                  # 진단 기록 — 환경·파이썬 밖 충돌 위치 (2026-11-28, 이 PC 에만)
     # 껍데기 창도 녹화에서 뺀다 — 껍데기가 환경변수로 준 자기 PID(개발 실행은 부모가 venv 런처라). 웹 요청이 정하지 못한다
     recorder.SHELL_PID = int(os.environ.get('VADER_SHELL_PID') or os.getppid())
     shell = Shell(out)

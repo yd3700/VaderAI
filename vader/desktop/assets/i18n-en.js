@@ -3,6 +3,7 @@ window.VADER_EN = {
 "(더 오래된 것은 찾지 않음)": "(older entries are not searched)",
 "비우면 프로그램 기본값": "Leave empty for the program default",
 "룬 연결": "Link a rune",
+"화면 오류 · 진단 기록에 남겼어요": "Screen error · saved to the diagnostic log",
 "룬 추천": "Suggest a rune",
 "열린 할 일에 맞는 룬을 추천해줘": "Suggest runes that fit my open to-dos",
 "설치된 룬 이름을 {0} 로 보내 카드에 맞는 룬을 추천받아요": "Sends installed rune names to {0} to get rune suggestions for your cards",
